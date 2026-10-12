@@ -119,7 +119,7 @@ Facts about Hyprland 0.56.2, checked on this machine:
 
 ## Doctor
 
-`doctor` never modifies anything. It checks two things: `hyprland.lua` in `$OMARCHY_DISPLAYS_HYPR_DIR` contains the loader line (`omarchy-displays loader-line`), and the running config answers `ok` to `hyprctl eval 'assert(OMARCHY_DISPLAYS_LOADED == "0.1.0")'`. Both pass: it prints `ok: pcall(require, "hypr.displays") is live` and exits 0. Otherwise it prints one `missing:` line per failed check and exits 1. After a version upgrade it fails until the next `persist` rewrites the marker. Any `OMARCHY_DISPLAYS_LOADED` value proves the file is loaded; a value other than the CLI's version adds a note and still exits 0.
+`doctor` never modifies anything. It checks two things: `hyprland.lua` in `$OMARCHY_DISPLAYS_HYPR_DIR` contains the loader line (`omarchy-displays loader-line`), and the running config answers `ok` to `hyprctl eval 'assert(OMARCHY_DISPLAYS_LOADED ~= nil)'`. Both pass: it prints `ok: pcall(require, "hypr.displays") is live` and exits 0. Otherwise it prints one `missing:` line per failed check and exits 1. Any `OMARCHY_DISPLAYS_LOADED` value proves the file is loaded; a value other than the CLI's version adds a `note:` line and still exits 0, so an upgrade never fails `doctor`.
 
 ## Install
 
