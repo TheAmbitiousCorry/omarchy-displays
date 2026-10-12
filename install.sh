@@ -13,6 +13,11 @@ ID=kr34t1v.displays
 PLUGIN_LINK="$HOME/.config/omarchy/plugins/$ID"
 CLI_LINK="$HOME/.local/bin/omarchy-displays"
 CLI="$REPO/bin/omarchy-displays"
+CLONE_DIR="$HOME/.config/omarchy/plugins/kr34t1v.monitor"
+CONFIGURE_PATCH="$REPO/patches/configure-button.patch"
+CONFIGURE_MARKER='// omarchy-displays: opens the Displays panel'
+DESKTOP_SRC="$REPO/desktop/omarchy-displays.desktop"
+DESKTOP_LINK="$HOME/.local/share/applications/omarchy-displays.desktop"
 HYPR_DIR="${OMARCHY_DISPLAYS_HYPR_DIR:-$HOME/.config/hypr}"
 HYPRLAND_LUA="$HYPR_DIR/hyprland.lua"
 LOADER_LINE=$("$CLI" loader-line)
@@ -53,6 +58,41 @@ add_loader_line() {
   echo "added loader line to $HYPRLAND_LUA"
 }
 
+# Clones the stock Display widget and adds the Configure button to the clone.
+# Cloning replaces the bar widget, so the shell must rescan to pick up the patch.
+patch_monitor_clone() {
+  local changed=0
+  if [[ -d $CLONE_DIR ]]; then
+    echo "already cloned: $CLONE_DIR"
+  else
+    omarchy plugin clone omarchy.monitor
+    echo "cloned omarchy.monitor to $CLONE_DIR"
+    changed=1
+  fi
+  if grep -qF -- "$CONFIGURE_MARKER" "$CLONE_DIR/Panel.qml"; then
+    echo "already patched: $CLONE_DIR/Panel.qml"
+  else
+    if ! patch -d "$CLONE_DIR" -p1 --forward --no-backup-if-mismatch -r - <"$CONFIGURE_PATCH"; then
+      echo "configure-button.patch does not apply to $CLONE_DIR/Panel.qml; the stock widget changed" >&2
+      exit 1
+    fi
+    echo "patched: Configure button in $CLONE_DIR/Panel.qml"
+    changed=1
+  fi
+  if ((changed)); then
+    omarchy-shell shell rescanPlugins
+    echo "rescanned plugins for the patched Display widget"
+  fi
+}
+
+link_desktop_entry() {
+  link "$DESKTOP_SRC" "$DESKTOP_LINK"
+  if command -v update-desktop-database >/dev/null; then
+    update-desktop-database "$(dirname "$DESKTOP_LINK")"
+    echo "updated desktop database"
+  fi
+}
+
 link "$REPO/plugin" "$PLUGIN_LINK"
 link "$CLI" "$CLI_LINK"
 
@@ -70,6 +110,9 @@ for _ in $(seq 1 25); do
 done
 omarchy plugin enable "$ID"
 echo "enabled $ID"
+
+patch_monitor_clone
+link_desktop_entry
 
 add_loader_line
 # doctor reads OMARCHY_DISPLAYS_LOADED from the running config, so a first

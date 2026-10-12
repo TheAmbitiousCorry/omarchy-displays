@@ -271,7 +271,7 @@ entry `omarchy-displays.desktop` in `~/.local/share/applications/` with
 Keywords monitor, display, displays, screen, so the launcher finds the
 panel; (3) install.sh does both idempotently.
 
-- [ ] Verification: the bar's Display widget shows Configure under its
+- [x] Verification: the bar's Display widget shows Configure under its
       displays list and clicking it (or Return on it) opens the panel.
       Typing "monitor" and "displays" in the Omarchy launcher lists
       "Displays" and launching it opens the panel. `install.sh` twice

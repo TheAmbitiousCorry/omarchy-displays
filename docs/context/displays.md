@@ -189,3 +189,9 @@ Actions:
 - **Identify** shows a large badge for 3 seconds on every screen, numbered as the rectangles are. A badge sits on the screen whose name equals the monitor's connector.
 
 Colours, radii, spacing and fonts come from the shell's `Color` and `Style` singletons, so a theme change recolours the open panel.
+
+## Entry points
+
+- **Menu.** Setup > Monitors in the Omarchy menu opens `monitors.lua` in the editor. It does not open the panel.
+- **Bar widget.** `install.sh` clones the stock Display widget (`omarchy plugin clone omarchy.monitor`, id `kr34t1v.monitor`) and applies `patches/configure-button.patch` to the clone's `Panel.qml`. The patch adds a bordered Configure button under the DISPLAYS list, shown only when more than one display exists. Click, or Down to it and Return, closes the widget panel and calls `bar.shell.summon("kr34t1v.displays", "{}")`. The button joins the widget's keyboard cursor as a `configure` section. The patched file carries the marker line `// omarchy-displays: opens the Displays panel`, which `install.sh` greps to skip a second patch. A clone no longer follows upstream edits to the stock widget; a patch that fails to apply stops `install.sh` with a non-zero exit.
+- **Desktop entry.** `desktop/omarchy-displays.desktop` is symlinked into `~/.local/share/applications/`, so the launcher (SUPER+SPACE) lists "Displays" for the keywords monitor, monitors, display, displays, screen and resolution. Its Exec is `omarchy-shell shell summon kr34t1v.displays {}`, the same call the button makes.

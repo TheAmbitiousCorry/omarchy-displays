@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Displays
+GenericName=Monitor layout
+Comment=Arrange monitors and set resolution, refresh rate, scale and rotation
+Exec=omarchy-shell shell summon kr34t1v.displays {}
+Icon=preferences-desktop-display
+Terminal=false
+Categories=Settings;HardwareSettings;
+Keywords=monitor;monitors;display;displays;screen;resolution;

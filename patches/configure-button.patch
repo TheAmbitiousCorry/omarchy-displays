@@ -1,0 +1,55 @@
+--- a/Panel.qml
++++ b/Panel.qml
+@@ -78,6 +78,7 @@
+     list.push("textsize")
+     list.push("scale")
+     if (displays.length > 1) list.push("monitors")
++    if (displays.length > 1) list.push("configure")
+     return list
+   }
+ 
+@@ -91,7 +92,7 @@
+ 
+   function sectionIsSingleRow(section) {
+     // brightness and text size are lone sliders; scale presets sit horizontally.
+-    return section === "brightness" || section === "textsize" || section === "scale"
++    return section === "brightness" || section === "textsize" || section === "scale" || section === "configure"
+   }
+ 
+   function sectionFirstIndex(section) {
+@@ -154,10 +155,19 @@
+     if (focusSection === "monitors" && selectedIndex >= 0 && selectedIndex < displays.length) {
+       var d = displays[selectedIndex]
+       if (d) toggleDisplay(d.name, d.enabled)
++      return
+     }
++    if (focusSection === "configure") openDisplays()
+     // brightness: no separate action; the slider value is the action.
+   }
+ 
++  // omarchy-displays: opens the Displays panel
++  function openDisplays() {
++    if (!bar || !bar.shell) return
++    root.close()
++    bar.shell.summon("kr34t1v.displays", "{}")
++  }
++
+   function clampCursor() {
+     var sections = visibleSections
+     if (!sections || !sections.length) return
+@@ -819,6 +829,15 @@
+                 rowIndex: index
+               }
+             }
++
++            Button {
++              text: "Configure"
++              bordered: true
++              foreground: root.bar.foreground
++              fontFamily: root.bar.fontFamily
++              hasCursor: root.cursorActive && root.focusSection === "configure"
++              onClicked: root.openDisplays()
++            }
+           }
+ 
+           Item {
