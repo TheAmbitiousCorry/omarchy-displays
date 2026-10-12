@@ -185,7 +185,7 @@ scale with presets plus free entry validated by the clean-divisor rule
 (`(w*120) % (scale*120) == 0`, same for height, after the Omarchy scaling
 script), effective logical size beside it, transform with 8 values.
 
-- [ ] Verification: scale 1.4 on 1920x1080 is rejected inline with the
+- [x] Verification: scale 1.4 on 1920x1080 is rejected inline with the
       wiki's reason; 1.5 is accepted and reads 1280x720. Setting the Samsung
       to 60Hz through the dropdown and keeping it produces a `displays.lua`
       identical to step 3's. Transform 1 on the Dell rotates it live and the
@@ -271,6 +271,12 @@ the omarchy-sysmon style per `writing:technical-writing`. Unknown 7 settled.
   backs up `hyprland.lua` only on a run that changes it; `install-dev.sh` is
   replaced by `install.sh`.
 
+- 2026-10-12, step 5a: verified by keyboard: unclean scale blocks Apply,
+  1.5 reads 1280x720, the mode dropdown selects 120 Hz, transform 1 on the
+  Dell applied live and lapsed. The Apply button cannot be reached by Tab
+  from here, so "mode change from the dropdown, then Apply and Keep" joins
+  the user's mouse checklist; its pieces (dropdown writes modeValue,
+  toProfile prefers modeValue, Keep persists) are each proven.
 - 2026-10-12, step 4: no pointer-synthesis tool on this machine, so the
   mouse drag was verified only through its shared code path (keyboard
   nudge walks the same applyDrag). A real drag and the Keep that follows

@@ -44,6 +44,19 @@ Item {
     return "Gap: " + names.join(", ") + (names.length === 1 ? " is" : " are") + " not touching another monitor"
   }
 
+  readonly property var uncleanMonitors: monitors.filter(function(m) {
+    return !m.disabled && !Model.scaleIsClean(m.width, m.height, m.scale)
+  })
+  readonly property bool anyEnabled: monitors.some(function(m) { return !m.disabled })
+  readonly property bool selectedEditable: selected !== null && !selected.disabled
+  readonly property var scaleWarning: {
+    var m = selected && uncleanMonitors.indexOf(selected) >= 0 ? selected : (uncleanMonitors[0] || null)
+    if (m === null) return ""
+    var s = Math.round(m.scale * 1000) / 1000
+    return s + " does not divide " + m.width + "x" + m.height + " cleanly (Hyprland would warn)"
+  }
+  readonly property var logical: selected ? Model.logicalSize(selected.width, selected.height, selected.scale, selected.transform) : ({ width: 0, height: 0 })
+
   function open(payloadJson) {
     refreshState()
     refreshStatus()
@@ -74,12 +87,22 @@ Item {
     statusProc.running = true
   }
 
-  function setPosition(index, axis, value) {
+  function updateMonitor(index, patch) {
     var next = monitors.slice()
-    var patch = {}
-    patch[axis] = value
     next[index] = Object.assign({}, next[index], patch)
     monitors = next
+  }
+
+  function setPosition(index, axis, value) {
+    var patch = {}
+    patch[axis] = value
+    updateMonitor(index, patch)
+  }
+
+  function commitScale(text) {
+    var v = parseFloat(text)
+    if (!(v > 0 && v <= 10)) return
+    updateMonitor(selectedIndex, { scale: v })
   }
 
   // Moves a monitor by (dx, dy) layout pixels from `base` rects, snapped and pushed out of overlaps.
@@ -234,7 +257,7 @@ Item {
         arrows[Qt.Key_Up] = [0, -step]
         arrows[Qt.Key_Down] = [0, step]
         var d = arrows[event.key]
-        if (d !== undefined && root.selected !== null && !root.counting) {
+        if (d !== undefined && root.selected !== null && !root.counting && keyCatcher.activeFocus) {
           root.nudge(d[0], d[1], step)
           event.accepted = true
         }
@@ -312,6 +335,7 @@ Item {
                   ? Border.flat(Color.accent, Math.max(2, Style.normalBorderWidth * 2))
                   : Border.flat(Style.normalBorderColor, Style.normalBorderWidth)
                 radius: Style.cornerRadius
+                opacity: monitor.disabled ? 0.4 : 1
 
                 Column {
                   anchors.centerIn: parent
@@ -417,6 +441,100 @@ Item {
 
           RowLayout {
             Layout.fillWidth: true
+            spacing: Style.spacing.panelGap
+            enabled: root.selected !== null
+
+            Toggle {
+              label: "Enabled"
+              foreground: Color.popups.text
+              checked: root.selected ? !root.selected.disabled : false
+              Layout.preferredWidth: Style.space(190)
+              Layout.alignment: Qt.AlignBottom
+              onClicked: root.updateMonitor(root.selectedIndex, { disabled: !!root.selected && !root.selected.disabled })
+            }
+            Dropdown {
+              id: modeDropdown
+              label: "Mode"
+              Layout.fillWidth: true
+              enabled: root.selectedEditable
+              opacity: enabled ? 1 : 0.5
+              options: root.selected ? Model.modeOptions(root.selected.availableModes) : []
+              Binding { target: modeDropdown; property: "value"; value: root.selected ? (root.selected.modeValue || Model.currentModeValue(root.selected)) : "" }
+              onChanged: function(v) { root.updateMonitor(root.selectedIndex, Model.modePatch(v)) }
+            }
+            Dropdown {
+              id: transformDropdown
+              label: "Transform"
+              Layout.preferredWidth: Style.space(170)
+              enabled: root.selectedEditable
+              opacity: enabled ? 1 : 0.5
+              options: Model.transformOptions()
+              Binding { target: transformDropdown; property: "value"; value: root.selected ? String(root.selected.transform || 0) : "0" }
+              onChanged: function(v) { root.updateMonitor(root.selectedIndex, { transform: Number(v) }) }
+            }
+          }
+
+          RowLayout {
+            Layout.fillWidth: true
+            spacing: Style.spacing.panelGap
+            enabled: root.selectedEditable
+            opacity: enabled ? 1 : 0.5
+
+            Text {
+              textFormat: Text.PlainText
+              text: "Scale"
+              color: Qt.darker(Color.popups.text, 1.4)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+              font.bold: true
+            }
+            ButtonGroup {
+              id: scalePresets
+              foreground: Color.popups.text
+              background: "transparent"
+              fontSize: Style.font.bodySmall
+              options: root.selected ? Model.scalePresets(root.selected.width, root.selected.height).map(function(s) { return String(s) }) : []
+              value: root.selected ? String(Math.round(root.selected.scale * 100) / 100) : ""
+              onChanged: function(v) { root.updateMonitor(root.selectedIndex, { scale: Number(v) }) }
+            }
+            TextField {
+              id: scaleField
+              foreground: Color.popups.text
+              Layout.preferredWidth: Style.space(84)
+              horizontalAlignment: Text.AlignHCenter
+              inputMethodHints: Qt.ImhFormattedNumbersOnly
+              onEditingFinished: root.commitScale(text)
+              Binding {
+                target: scaleField
+                property: "text"
+                value: root.selected ? String(Math.round(root.selected.scale * 1000) / 1000) : ""
+                when: !scaleField.activeFocus
+                restoreMode: Binding.RestoreNone
+              }
+            }
+            Text {
+              textFormat: Text.PlainText
+              text: "Logical: " + root.logical.width + " x " + root.logical.height
+              color: Color.popups.text
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+              Layout.fillWidth: true
+            }
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            Layout.fillWidth: true
+            Layout.preferredHeight: gapMetrics.height
+            text: root.scaleWarning
+            color: Color.urgent
+            font.family: Style.font.family
+            font.pixelSize: Style.font.bodySmall
+            elide: Text.ElideRight
+          }
+
+          RowLayout {
+            Layout.fillWidth: true
             spacing: Style.spacing.controlGap
 
             Item { Layout.fillWidth: true }
@@ -439,7 +557,7 @@ Item {
               bordered: true
               focusable: true
               selected: true
-              enabled: !root.busy && !root.counting && root.monitors.length > 0
+              enabled: !root.busy && !root.counting && root.anyEnabled && root.uncleanMonitors.length === 0
               opacity: enabled ? 1 : 0.5
               foreground: Color.popups.text
               onClicked: root.apply()

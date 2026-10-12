@@ -146,9 +146,18 @@ With a monitor selected the arrow keys nudge it 10 layout pixels, Shift+arrow 1,
 
 When a monitor shares no edge segment or corner with another, a line under the canvas reads "Gap: <model> is not touching another monitor" in the urgent colour. Apply stays enabled, since Hyprland accepts gaps. Below the canvas, two number fields edit the selected monitor's `x` and `y`; only non-negative integers are accepted.
 
+Under the X and Y fields the selected monitor has two rows of controls. Everything writes into the same `monitors` list as position, so Apply builds the profile unchanged; nothing reaches Hyprland before Apply.
+
+- **Enabled** toggles `disabled`. A disabled monitor is drawn at 0.4 opacity and its other controls are dimmed and inactive; Apply sends it as `enabled: false` only.
+- **Mode** is a dropdown of `Preferred`, `Highest resolution`, `Highest refresh rate`, then every real mode from `availableModes` as `1920 x 1080  75 Hz`, deduplicated by the profile value `WIDTHxHEIGHT@HZ` (refresh rounded) and sorted by width, height and refresh, descending. Choosing a real mode also rewrites `width`, `height` and `refreshRate` so the rectangle resizes; a special leaves them alone and is sent as the mode string. A chosen `modeValue` overrides the size and refresh in the profile.
+- **Scale** is a row of buttons plus a free number field. The buttons are the clean scales from 1 to 2 for the monitor's current mode (at most six, evenly thinned when more qualify); the field takes any value above 0 up to 10 and commits on Enter or when it loses focus. "Logical: W x H" beside it is the mode after the transform swap divided by the scale, rounded.
+- **Transform** is a dropdown of the eight Hyprland values: Normal, 90°, 180°, 270°, Flipped, Flipped 90°, Flipped 180°, Flipped 270°.
+
+A scale is clean when `width * 120` and `height * 120` are both divisible by `round(scale * 120)`, the rule `omarchy-hyprland-monitor-scaling` applies. An unclean scale on any enabled monitor shows "1.4 does not divide 1920x1080 cleanly (Hyprland would warn)" in the urgent colour under the controls (the selected monitor's, else the first offender's) and disables Apply. Apply is also disabled when every monitor is disabled. Arrow-key nudging only runs while no control has focus; Tab walks the controls and Escape still closes the panel.
+
 Actions:
 
-- **Apply** builds a schema version 1 profile from the shown monitors (`mode` as `WIDTHxHEIGHT@HZ` with the refresh rate rounded, `position` as `XxY`) into a temporary file and runs `apply <file> --timeout 15`. On exit 0 the panel reads `status` and the stock `ConfirmDialog` opens. Exit 2 shows that a countdown is already running.
+- **Apply** builds a schema version 1 profile from the shown monitors (`mode` as `WIDTHxHEIGHT@HZ` with the refresh rate rounded, or the chosen special, `position` as `XxY`, `scale` as a number, `transform` as 0 to 7) into a temporary file and runs `apply <file> --timeout 15`. On exit 0 the panel reads `status` and the stock `ConfirmDialog` opens. Exit 2 shows that a countdown is already running.
 - **Keep** (the dialog's confirm button) runs `confirm` and then `persist` in one invocation. A failed `confirm` shows "Nothing to keep"; a failed `persist` after a successful `confirm` shows "Kept but not saved (exit N)".
 - **Revert** (the button, the dialog's cancel button, or Escape in the dialog) runs `revert`.
 - The dialog mirrors `status`: the panel polls it on open, after `apply` exits 0, and every second while the dialog shows. The dialog is open exactly while `countdown` is non-null and shows its `remaining`, so reopening the panel mid-countdown shows the dialog with the right seconds. When `status` flips to null the CLI has confirmed or reloaded, the dialog closes and the panel re-reads `state`.

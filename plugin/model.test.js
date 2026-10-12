@@ -162,3 +162,103 @@ test("snap picks the nearest corner when two are in range", () => {
   const near = R(-100, 100)
   assert.deepStrictEqual({ ...Model.snap(R(2, 205), [far, near], 20) }, { x: 0, y: 200 })
 })
+
+const MODES = ["1920x1080@60.00Hz", "1920x1080@164.92Hz", "1920x1080@60.00Hz", "1920x1080@59.94Hz", "1280x720@60.00Hz", "2560x1440@74.97Hz", "garbage"]
+
+test("modeOptions puts the three specials first with their labels", () => {
+  const o = Model.modeOptions(MODES).map((x) => ({ ...x }))
+  assert.deepStrictEqual([...o.slice(0, 3)], [
+    { label: "Preferred", value: "preferred" },
+    { label: "Highest resolution", value: "highres" },
+    { label: "Highest refresh rate", value: "highrr" },
+  ])
+})
+
+test("modeOptions dedupes repeated and rounding-equal modes into one value", () => {
+  const values = Model.modeOptions(MODES).map((x) => x.value)
+  assert.strictEqual(values.filter((v) => v === "1920x1080@60").length, 1)
+})
+
+test("modeOptions sorts width, height, then refresh descending and formats labels", () => {
+  const real = Model.modeOptions(MODES).slice(3).map((x) => ({ ...x }))
+  assert.deepStrictEqual([...real], [
+    { label: "2560 x 1440  75 Hz", value: "2560x1440@75" },
+    { label: "1920 x 1080  165 Hz", value: "1920x1080@165" },
+    { label: "1920 x 1080  60 Hz", value: "1920x1080@60" },
+    { label: "1280 x 720  60 Hz", value: "1280x720@60" },
+  ])
+})
+
+test("modeOptions with no modes still offers the specials", () => {
+  assert.strictEqual(Model.modeOptions([]).length, 3)
+  assert.strictEqual(Model.modeOptions(undefined).length, 3)
+})
+
+test("currentModeValue rounds the refresh rate", () => {
+  assert.strictEqual(Model.currentModeValue(mon({})), "1920x1080@75")
+})
+
+test("modePatch for a real mode sets size and rate, for a special only the choice", () => {
+  assert.deepStrictEqual({ ...Model.modePatch("1280x720@60") }, { modeValue: "1280x720@60", width: 1280, height: 720, refreshRate: 60 })
+  assert.deepStrictEqual({ ...Model.modePatch("highrr") }, { modeValue: "highrr" })
+})
+
+test("scaleIsClean follows Hyprland's divisor rule on 1920x1080", () => {
+  for (const s of [1, 1.25, 1.5, 1.6, 2]) assert.strictEqual(Model.scaleIsClean(1920, 1080, s), true, String(s))
+  assert.strictEqual(Model.scaleIsClean(1920, 1080, 1.4), false)
+})
+
+test("scaleIsClean rejects zero and negative scales, and checks height as well as width", () => {
+  assert.strictEqual(Model.scaleIsClean(1920, 1080, 0), false)
+  assert.strictEqual(Model.scaleIsClean(1920, 1080, -1), false)
+  assert.strictEqual(Model.scaleIsClean(1920, 1081, 1.5), false)
+  assert.strictEqual(Model.scaleIsClean(1921, 1080, 1.5), false)
+})
+
+test("cleanScales on 1920x1080 includes the stock presets and stays within 1 to 3", () => {
+  const c = Model.cleanScales(1920, 1080)
+  for (const s of [1, 1.25, 1.6, 2, 3]) assert.ok(c.includes(s), String(s))
+  assert.ok(!c.includes(1.4))
+  assert.ok(Math.min(...c) >= 1 && Math.max(...c) <= 3)
+})
+
+test("scalePresets never exceeds six buttons and keeps 1 and the largest clean scale up to 2", () => {
+  const p = Model.scalePresets(1920, 1080)
+  assert.deepStrictEqual([...p], [1, 1.2, 1.25, 1.5, 1.6, 2])
+  const wide = Model.scalePresets(3840, 2160)
+  assert.strictEqual(wide.length, 6)
+  assert.strictEqual(wide[0], 1)
+  assert.strictEqual(wide[5], 2)
+})
+
+test("logicalSize applies the transform swap then divides by scale", () => {
+  assert.deepStrictEqual({ ...Model.logicalSize(1920, 1080, 2, 1) }, { width: 540, height: 960 })
+  assert.deepStrictEqual({ ...Model.logicalSize(1920, 1080, 1.5, 0) }, { width: 1280, height: 720 })
+  assert.deepStrictEqual({ ...Model.logicalSize(1920, 1080, 1.6, 2) }, { width: 1200, height: 675 })
+})
+
+test("logicalSize rounds a fractional result", () => {
+  assert.deepStrictEqual({ ...Model.logicalSize(1920, 1080, 1.4, 0) }, { width: 1371, height: 771 })
+})
+
+test("transformOptions lists the eight Hyprland values in order", () => {
+  const o = Model.transformOptions()
+  assert.deepStrictEqual([...o.map((x) => x.value)], [0, 1, 2, 3, 4, 5, 6, 7])
+  assert.deepStrictEqual([...o.map((x) => x.label)], ["Normal", "90°", "180°", "270°", "Flipped", "Flipped 90°", "Flipped 180°", "Flipped 270°"])
+})
+
+test("toProfile uses an edited modeValue over the size and refresh fields", () => {
+  const m = Model.toProfile([mon({ modeValue: "highrr" })], "p").monitors[0]
+  assert.strictEqual(m.mode, "highrr")
+})
+
+test("toProfile emits scale as a number and keeps the transform", () => {
+  const m = Model.toProfile([mon({ scale: "1.5", transform: 3 })], "p").monitors[0]
+  assert.strictEqual(m.scale, 1.5)
+  assert.strictEqual(typeof m.scale, "number")
+  assert.strictEqual(m.transform, 3)
+})
+
+test("toProfile trims float noise from a reported scale", () => {
+  assert.strictEqual(Model.toProfile([mon({ scale: 1.2000000476837158 })], "p").monitors[0].scale, 1.2)
+})

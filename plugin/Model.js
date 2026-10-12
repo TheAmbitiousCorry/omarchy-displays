@@ -41,13 +41,86 @@ function toProfile(monitors, name) {
         return entry
       }
       entry.enabled = true
-      entry.mode = m.width + "x" + m.height + "@" + Math.round(m.refreshRate)
+      entry.mode = m.modeValue || currentModeValue(m)
       entry.position = m.x + "x" + m.y
-      entry.scale = m.scale
+      entry.scale = Math.round(Number(m.scale) * 1000) / 1000
       entry.transform = m.transform || 0
       return entry
     })
   }
+}
+
+var SPECIAL_MODES = [
+  { label: "Preferred", value: "preferred" },
+  { label: "Highest resolution", value: "highres" },
+  { label: "Highest refresh rate", value: "highrr" },
+]
+
+function currentModeValue(monitor) {
+  return monitor.width + "x" + monitor.height + "@" + Math.round(monitor.refreshRate)
+}
+
+function modeOptions(availableModes) {
+  var parsed = []
+  ;(availableModes || []).forEach(function (s) {
+    var m = /^(\d+)x(\d+)@([\d.]+)Hz$/.exec(s)
+    if (m) parsed.push({ width: Number(m[1]), height: Number(m[2]), hz: Number(m[3]) })
+  })
+  parsed.sort(function (a, b) { return b.width - a.width || b.height - a.height || b.hz - a.hz })
+  var seen = {}
+  var real = []
+  parsed.forEach(function (p) {
+    var hz = Math.round(p.hz)
+    var value = p.width + "x" + p.height + "@" + hz
+    if (seen[value]) return
+    seen[value] = true
+    real.push({ label: p.width + " x " + p.height + "  " + hz + " Hz", value: value })
+  })
+  return SPECIAL_MODES.concat(real)
+}
+
+// The monitor fields a dropdown value implies; specials only record the choice.
+function modePatch(value) {
+  var m = /^(\d+)x(\d+)@(\d+)$/.exec(value)
+  if (!m) return { modeValue: value }
+  return { modeValue: value, width: Number(m[1]), height: Number(m[2]), refreshRate: Number(m[3]) }
+}
+
+// Hyprland needs the mode to divide into whole logical pixels in 1/120 steps.
+function scaleIsClean(width, height, scale) {
+  var k = Math.round(scale * 120)
+  if (!(k > 0)) return false
+  return (width * 120) % k === 0 && (height * 120) % k === 0
+}
+
+function cleanScales(width, height) {
+  var out = []
+  for (var i = 0; i <= 40; i++) {
+    var s = Math.round((1 + i * 0.05) * 100) / 100
+    if (scaleIsClean(width, height, s)) out.push(s)
+  }
+  return out
+}
+
+var MAX_SCALE_PRESETS = 6
+
+function scalePresets(width, height) {
+  var all = cleanScales(width, height).filter(function (s) { return s <= 2 })
+  if (all.length <= MAX_SCALE_PRESETS) return all
+  var out = []
+  for (var i = 0; i < MAX_SCALE_PRESETS; i++) out.push(all[Math.round(i * (all.length - 1) / (MAX_SCALE_PRESETS - 1))])
+  return out
+}
+
+function logicalSize(width, height, scale, transform) {
+  var r = logicalRect({ x: 0, y: 0, width: width, height: height, scale: scale, transform: transform })
+  return { width: Math.round(r.width), height: Math.round(r.height) }
+}
+
+var TRANSFORM_LABELS = ["Normal", "90°", "180°", "270°", "Flipped", "Flipped 90°", "Flipped 180°", "Flipped 270°"]
+
+function transformOptions() {
+  return TRANSFORM_LABELS.map(function (label, i) { return { label: label, value: i } })
 }
 
 function shortName(monitor) {
