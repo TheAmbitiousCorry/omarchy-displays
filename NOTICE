@@ -1,0 +1,15 @@
+This repository contains code under two copyrights.
+
+`bin/omarchy-displays`, `plugin/`, `install.sh`, `uninstall.sh`, `menu/`,
+`desktop/`, `test/`, and the documentation are original work, MIT licensed,
+Copyright (c) 2026 Cornelis Terblanche. See LICENSE.
+
+`patches/configure-button.patch` is a change to the first-party Omarchy Display
+widget, `Panel.qml` of `omarchy.monitor`, taken from Omarchy 4.0.0
+(`/usr/share/omarchy/shell/plugins/bar`). Omarchy is MIT licensed, Copyright
+(c) David Heinemeier Hansson. `install.sh` applies the patch to a clone that
+`omarchy plugin clone` makes on your machine; this repository ships the patch,
+not the widget.
+
+Everything in that clone other than the lines the patch adds is upstream's work,
+not this project's.

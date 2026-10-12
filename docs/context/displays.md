@@ -183,7 +183,7 @@ Facts checked on this machine, Hyprland 0.56.2, with `hyprctl output create head
 
 ## Install
 
-`install.sh` (repo root, safe to re-run) symlinks the plugin into `~/.config/omarchy/plugins/` and the CLI into `~/.local/bin/`, enables the plugin, then edits the Hyprland config:
+`install.sh` (repo root, safe to re-run) symlinks the plugin into `~/.config/omarchy/plugins/` and the CLI into `~/.local/bin/`, enables the plugin, clones and patches the stock Display widget and links the desktop entry (see [Entry points](#entry-points)), merges the menu entry, then edits the Hyprland config:
 
 - Backs up `hyprland.lua` to `hyprland.lua.bak.<epoch>`, only on a run that is about to change it.
 - Inserts the loader line immediately before the line containing `require("default.hypr.toggles")`, or appends it if there is no such line. It skips this if the line is already present.
@@ -195,6 +195,25 @@ pcall(require, "hypr.displays")
 ```
 
 It sits after the user's `hypr.monitors` require so generated rules win, and before the toggles so Omarchy's laptop-disable toggle still wins. If `displays.lua` does not exist it runs `persist --empty`. It then runs `hyprctl reload` and `doctor`, and exits with doctor's status. `~/.config/hypr/monitors.lua` is never read or written.
+
+The menu entry is merged into `~/.config/omarchy/extensions/omarchy-menu.jsonc` as a marked block (see [Entry points](#entry-points)). `install.sh` inserts the block from `menu/omarchy-menu.jsonc` on the line after the file's opening `{`, so the user's comments and entries are untouched, and skips it when the begin marker is already present. A file with no line holding only `{` is refused with an instruction to add the block by hand. A missing file is created holding only the block. Before editing an existing file it copies it to `omarchy-menu.jsonc.bak.<epoch>`. The merge is textual because the file is mostly comments, which a `jq` round trip would drop.
+
+`omarchy plugin add <git url>` clones the plugin and validates its manifest but runs no install hook (the shell's plugin README: "The installer never runs plugin code, install hooks, or sudo"), so `install.sh` is the install path. A plugin added that way has no loader line, clone, menu entry or desktop entry until `./install.sh` runs from `~/.config/omarchy/plugins/kr34t1v.displays`.
+
+### Uninstall
+
+`uninstall.sh` (repo root, safe to re-run) undoes `install.sh` step by step and prints one line per step, `already gone: <path>` when there is nothing to do:
+
+- Deletes the exact loader line from `hyprland.lua` and nothing else, so the file ends byte-identical to the backup taken before the install.
+- Deletes `displays.lua` and every `displays.lua.bak.*`.
+- Runs `omarchy plugin remove kr34t1v.displays --yes` when the plugin link points at this repo, and removes the CLI and desktop symlinks only when they point at this repo, then runs `update-desktop-database`. A path that is not ours is left alone.
+- Deletes the marked menu block. A menu file left holding only braces is deleted.
+- Runs `omarchy plugin remove kr34t1v.monitor --yes` when the clone's `Panel.qml` carries the Configure marker. The shell moves the folder to `~/.config/omarchy/plugins/.kr34t1v.monitor.bak.<timestamp>` and restores `omarchy.monitor` in the clone's bar position. A clone without the marker is left alone. It then enables `omarchy.monitor` if it is not enabled.
+- Keeps `~/.config/omarchy/displays/` unless run with `--purge`.
+- Runs `hyprctl reload`, prints `hyprctl configerrors`, and exits 1 if that output is not empty.
+
+The `hyprland.lua.bak.*` and `omarchy-menu.jsonc.bak.*` files from `install.sh` stay. `monitors.lua` is never touched, so the monitors keep the layout it holds.
+
 
 ## Profiles
 
@@ -279,6 +298,6 @@ Colours, radii, spacing and fonts come from the shell's `Color` and `Style` sing
 
 ## Entry points
 
-- **Menu.** Setup > Monitors in the Omarchy menu opens `monitors.lua` in the editor. It does not open the panel.
+- **Menu.** `menu/omarchy-menu.jsonc` overrides `setup.monitors` and adds two children, merged into the user's menu extension by `install.sh`. `setup.monitors` takes `"action": ""`, which makes it a submenu (the menu runs a row's `action` and never opens its children, and an override can only replace a field, not delete it). `setup.monitors.displays` ("Displays") runs `omarchy-shell shell summon kr34t1v.displays '{}'`; `setup.monitors.edit` ("Edit monitors.lua") runs the default `omarchy-launch-config-editor "$HOME/.config/hypr/monitors.lua"`. The block sits between the comment lines `// >>> omarchy-displays ...` and `// <<< omarchy-displays <<<`, which `uninstall.sh` deletes; with the block gone the default `setup.monitors` applies again. The shell hot-reloads the file.
 - **Bar widget.** `install.sh` clones the stock Display widget (`omarchy plugin clone omarchy.monitor`, id `kr34t1v.monitor`) and applies `patches/configure-button.patch` to the clone's `Panel.qml`. The patch adds a bordered Configure button under the DISPLAYS list, shown only when more than one display exists. Click, or Down to it and Return, closes the widget panel and calls `bar.shell.summon("kr34t1v.displays", "{}")`. The button joins the widget's keyboard cursor as a `configure` section. The patched file carries the marker line `// omarchy-displays: opens the Displays panel`, which `install.sh` greps to skip a second patch. A clone no longer follows upstream edits to the stock widget; a patch that fails to apply stops `install.sh` with a non-zero exit.
 - **Desktop entry.** `desktop/omarchy-displays.desktop` is symlinked into `~/.local/share/applications/`, so the launcher (SUPER+SPACE) lists "Displays" for the keywords monitor, monitors, display, displays, screen and resolution. Its Exec is `omarchy-shell shell summon kr34t1v.displays {}`, the same call the button makes.

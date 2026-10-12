@@ -119,8 +119,13 @@ Resolve these in the step that first needs them; none blocks step 1.
    switches two monitors at once). Step 7 decides whether the panel reads the
    assignment from `hyprctl workspacerules` and leaves the keybinds alone, or
    owns both. Default assumption: reads and leaves keybinds alone.
-7. Whether `omarchy plugin add` can run a post-install hook, or whether the
-   panel must offer "Finish install" on first summon. Step 9.
+7. Resolved in step 9. `omarchy plugin add` cannot run a post-install hook:
+   the shell's `README.md` says "The installer never runs plugin code, install
+   hooks, or sudo", and `omarchy-plugin-add` only clones, validates the
+   manifest and toggles enabled state. So `install.sh` is the install path and
+   the panel offers no "Finish install". The README carries a one-line Finish
+   install note for a plugin added through `omarchy plugin add`: run
+   `./install.sh` from `~/.config/omarchy/plugins/kr34t1v.displays`.
 8. Resolved in step 8. Omarchy's own scripts call
    `omarchy-notification-send "<headline>" ["<body>"]` (the `omarchy
    notification send` helper, a `busctl` call to
@@ -299,19 +304,36 @@ panel; (3) install.sh does both idempotently.
 
 ### 9. Uninstall, menu, docs
 
-Delivers `uninstall.sh` (restores `hyprland.lua` from its backup, removes
-the symlinks and menu entry), the menu extension that points Setup > Monitors
-at the panel and keeps "Edit monitors.lua" as a sub-entry, and a README in
-the omarchy-sysmon style per `writing:technical-writing`. Unknown 7 settled.
+Delivers `uninstall.sh` (removes the loader line by exact match, the generated
+files, the symlinks, the menu block and the widget clone), the menu extension
+that points Setup > Monitors at the panel and keeps "Edit monitors.lua" as a
+sub-entry, and a README in the omarchy-sysmon style per
+`writing:technical-writing`. Unknown 7 settled.
 
-- [ ] Verification: `uninstall.sh` leaves `hyprland.lua` and the menu file
+- [x] Verification: `uninstall.sh` leaves `hyprland.lua` and the menu file
       byte-identical to their pre-install backups and `hyprctl configerrors`
-      is empty. `install.sh` from a fresh clone brings the panel back and
-      `doctor` passes. A test greps the README's install block and finds it
-      identical to `install.sh`'s documented invocation.
+      is empty. `install.sh` brings the panel back and `doctor` passes.
+      `test/readme-test.sh` checks that the README's install block runs
+      `install.sh`'s documented invocation and that its CLI list equals
+      `omarchy-displays help`.
 - Spec domain: docs, install.
 
 ## Deviation log
+
+- 2026-10-12, step 9: the menu runs a row's `action` and never opens its
+  children, and an override cannot delete a field, so `setup.monitors` cannot
+  both summon the panel and carry the editor sub-entry. It becomes a submenu
+  (`"action": ""`) with children Displays and Edit monitors.lua; the
+  extension is merged as a marked text block, not with `jq`, because the
+  user's file is mostly comments. The "pre-install backup" for the
+  byte-identical check is the newest `hyprland.lua.bak.*` made by `install.sh`,
+  not the oldest in the directory (that one predates the plugin). The README
+  test asserts the install block contains `./install.sh` rather than equals it,
+  since the block also holds the `git clone`. `uninstall.sh` uses
+  `omarchy plugin remove` for the widget clone because the shell's remove
+  restores the stock widget in the clone's bar position (checked: `shell.json`
+  after uninstall differs from the pre-install copy only by the removed plugin
+  entry), where a bare enable uses the manifest's default section. Verified from the repo checkout, not a second clone.
 
 - 2026-10-12, step 8: unknown 5 showed Hyprland emits no `configreloaded`
   after a healthy hotplug, so the debounce also restarts on `monitoraddedv2`

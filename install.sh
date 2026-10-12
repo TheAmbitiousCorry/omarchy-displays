@@ -18,6 +18,10 @@ CONFIGURE_PATCH="$REPO/patches/configure-button.patch"
 CONFIGURE_MARKER='// omarchy-displays: opens the Displays panel'
 DESKTOP_SRC="$REPO/desktop/omarchy-displays.desktop"
 DESKTOP_LINK="$HOME/.local/share/applications/omarchy-displays.desktop"
+MENU_SRC="$REPO/menu/omarchy-menu.jsonc"
+MENU_FILE="${OMARCHY_DISPLAYS_MENU_FILE:-$HOME/.config/omarchy/extensions/omarchy-menu.jsonc}"
+MENU_BEGIN='>>> omarchy-displays'
+MENU_END='<<< omarchy-displays'
 HYPR_DIR="${OMARCHY_DISPLAYS_HYPR_DIR:-$HOME/.config/hypr}"
 HYPRLAND_LUA="$HYPR_DIR/hyprland.lua"
 LOADER_LINE=$("$CLI" loader-line)
@@ -93,6 +97,35 @@ link_desktop_entry() {
   fi
 }
 
+# Inserts the marked block from menu/omarchy-menu.jsonc right after the opening
+# brace of the user's extension file, so their comments and entries stay as they
+# are. A merge through jq would drop every comment. uninstall.sh deletes the block.
+add_menu_entry() {
+  local block tmp
+  if [[ -f $MENU_FILE ]] && grep -qF -- "$MENU_BEGIN" "$MENU_FILE"; then
+    echo "already present: menu entry in $MENU_FILE"
+    return
+  fi
+  block=$(sed -n "/$MENU_BEGIN/,/$MENU_END/p" "$MENU_SRC")
+  mkdir -p "$(dirname "$MENU_FILE")"
+  if [[ ! -f $MENU_FILE ]]; then
+    printf '{\n%s\n}\n' "$block" >"$MENU_FILE"
+    echo "created $MENU_FILE with the menu entry"
+    return
+  fi
+  if ! grep -qE '^[[:space:]]*\{[[:space:]]*$' "$MENU_FILE"; then
+    echo "no line holding only { in $MENU_FILE; add the block from $MENU_SRC by hand" >&2
+    exit 1
+  fi
+  cp -p "$MENU_FILE" "$MENU_FILE.bak.$(date +%s)"
+  tmp=$(mktemp "$MENU_FILE.tmp.XXXXXX")
+  # ENVIRON, not awk -v: -v would interpret the backslashes in the JSON escapes.
+  BLOCK=$block awk '{ print } !done && /^[ \t]*\{[ \t]*$/ { print ENVIRON["BLOCK"]; done = 1 }' "$MENU_FILE" >"$tmp"
+  chmod --reference="$MENU_FILE" "$tmp"
+  mv -f "$tmp" "$MENU_FILE"
+  echo "added menu entry to $MENU_FILE"
+}
+
 link "$REPO/plugin" "$PLUGIN_LINK"
 link "$CLI" "$CLI_LINK"
 
@@ -113,6 +146,7 @@ echo "enabled $ID"
 
 patch_monitor_clone
 link_desktop_entry
+add_menu_entry
 
 add_loader_line
 # doctor reads OMARCHY_DISPLAYS_LOADED from the running config, so a first

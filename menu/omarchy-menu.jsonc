@@ -1,0 +1,7 @@
+{
+  // >>> omarchy-displays (managed by install.sh and uninstall.sh; do not edit) >>>
+  "setup.monitors": {"icon":"\udb80\udf79","label":"Monitors","action":""},
+  "setup.monitors.displays": {"icon":"\udb80\udf79","label":"Displays","aliases":["displays","monitors"],"action":"omarchy-shell shell summon kr34t1v.displays '{}'"},
+  "setup.monitors.edit": {"icon":"\uf044","label":"Edit monitors.lua","action":"omarchy-launch-config-editor \"$HOME/.config/hypr/monitors.lua\""},
+  // <<< omarchy-displays <<<
+}
