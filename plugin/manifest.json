@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "author": "kr34t1v",
   "description": "Arrange monitors to scale and apply the layout with a keep-or-revert countdown",
-  "kinds": ["panel"],
-  "entryPoints": { "panel": "Panel.qml" }
+  "kinds": ["panel", "service"],
+  "keepLoaded": true,
+  "entryPoints": { "panel": "Panel.qml", "service": "Service.qml" }
 }

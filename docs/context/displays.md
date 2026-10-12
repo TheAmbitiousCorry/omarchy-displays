@@ -7,7 +7,7 @@ last-verified: 2026-10-12
 
 `bin/omarchy-displays` reads Hyprland's monitor state, applies a profile live, and reverts it unless the change is confirmed in time. It needs only bash, coreutils, `jq` and `hyprctl`, and works from a TTY.
 
-Commands: `state`, `workspaces`, `apply <profile.json> [--timeout N]`, `confirm`, `revert`, `status`, `persist [profile.json]`, `profile list|show|save|delete|activate|match`, `doctor`, `loader-line`, `version`, `help`. `version` prints `0.1.0`. The hidden `_countdown` command is the detached countdown process and is not for direct use.
+Commands: `state`, `workspaces`, `apply <profile.json> [--timeout N]`, `confirm`, `revert`, `status`, `persist [profile.json]`, `profile list|show|save|delete|activate|match`, `hotplug`, `doctor`, `loader-line`, `version`, `help`. `version` prints `0.1.0`. The hidden `_countdown` command is the detached countdown process and is not for direct use.
 
 ## Profile schema
 
@@ -57,7 +57,9 @@ An optional field that is absent or `null` is omitted from the generated rule. `
 2. Empty `serial` and a make plus model that is unique among connected monitors: `desc:<make> <model>`.
 3. Empty `serial` and a make plus model shared with another connected monitor: the connector `name`, plus `"identityWarning": "duplicate make and model without serial; matched by connector"`.
 
-Hyprland matches a `desc:` identity as a prefix of the monitor description.
+4. Empty `serial` and an empty make and model (a virtual output, or a monitor without EDID): the connector `name`, plus `"identityWarning": "no EDID make or model; matched by connector"`. Rule 2 would give `desc: `, which Hyprland matches against every monitor.
+
+Rules are tried in this order, so rule 4 applies before rules 2 and 3. Hyprland matches a `desc:` identity as a prefix of the monitor description.
 
 Every other field in `state` output is Hyprland's own, passed through unchanged; only `identity` and `identityWarning` are this tool's contract. Callers parse `state` JSON, never the prose that `apply`, `confirm` and `revert` print.
 
@@ -85,7 +87,7 @@ The lock is the directory `$XDG_RUNTIME_DIR/omarchy-displays/countdown` (falling
 |---|---|
 | 0 | Success. |
 | 1 | `confirm` with no countdown; a `hyprctl eval` or `reload` that failed; `doctor` found something missing. |
-| 2 | `apply` refused because a countdown is live. |
+| 2 | `apply` or `hotplug` refused because a countdown is live. |
 | 3 | Invalid input: unreadable or malformed profile, schema violation, a string or number that fails the whitelist, bad `--timeout`, unknown command or option, `persist` with no argument, no `last-applied.json` and no active profile, a profile name that fails the name rule, `profile show`, `delete` or `activate` of a missing profile. No `hyprctl` call is made and nothing is written. |
 
 Validation problems are written to stderr, one per line.
@@ -152,6 +154,28 @@ Checked live on Hyprland 0.56.2:
 - Evaluating a rule identical to an existing one leaves `hyprctl -j workspacerules` unchanged.
 - Evaluating a rule changes `hyprctl -j workspacerules` at once, and `hyprctl reload` restores the file's rule.
 - A rule moves where a workspace is created, not a workspace that already exists. With workspace 6 live on the Dell and an eval'd rule putting it on the Samsung, `hyprctl dispatch 'hl.dsp.focus({ workspace = "6" })'` left it on the Dell. A workspace with no windows that did not exist (8) was created on the Samsung after the same kind of eval. An existing workspace moves with `hl.dsp.workspace.move`, which accepts a `desc:` identity as `monitor`; `apply` and `persist` issue it.
+
+## Hotplug
+
+`hotplug` applies the stored profile that matches the monitors connected now, without a countdown. Decision table, first row that fits wins:
+
+| Condition | Effect | Prints | Exit |
+|---|---|---|---|
+| A countdown lock is live | Nothing is read or written | `a countdown is already running (pid P); confirm or revert first` | 2 |
+| No stored profile matches (`profile match` finds none) | Nothing | `no profile matches N monitors` | 0 |
+| The match is the active profile and line 2 of `displays.lua` is `-- Profile: <name>` | Nothing | `already active: <name>` | 0 |
+| Otherwise | `profile activate`, then `persist` (one reload, fallback rules included), then a notification | `applied <name>` | 0 |
+
+A new monitor set with no profile is normal: nothing is notified, and the user opens the panel and saves one. Matching is `profile match`, so the active profile wins among equal sets. The notification is `omarchy-notification-send "Displays: applied profile <name>"`, the helper Omarchy's own scripts use; a failure to send it is ignored. `persist` reloads Hyprland, which emits `configreloaded`; the run that follows finds the profile active and persisted and stops, so there is no loop.
+
+The `service` entry point (`plugin/Service.qml`, `keepLoaded`, so it survives plugin hot-reload and changes to it need `omarchy restart shell`) connects to `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock` and reads lines. A line starting `monitoraddedv2>>`, `monitorremovedv2>>` or `configreloaded>>` restarts a 2000 ms timer; when it fires the service runs `omarchy-displays hotplug` and logs each stdout line as `omarchy-displays: <line>`, visible with `journalctl --user -t omarchy-shell`. Exit 2 retries every 2000 ms, at most 30 times, then logs that it gave up. A closed or failed socket reconnects after 5 s.
+
+Facts checked on this machine, Hyprland 0.56.2, with `hyprctl output create headless` and `output remove`:
+
+- A healthy hotplug emits `monitoradded`, `monitoraddedv2` (or the removed pair) and no `configreloaded`. `omarchy-hyprland-monitor-watch` reloads only when a monitor reports no mode, and logs nothing, so the monitor events are the reliable signal and `configreloaded` covers its recovery reload.
+- A headless output gets the next `HEADLESS-N` and never reuses a number, so a profile for one needs `hyprctl output create headless NAME` to match twice.
+- With a profile active, a hotplug cycle took about 2.1 s from the event to the profile being active, one reload per applied change.
+- While `apply` held a lock, the service retried every 2 s (four times in the live run) and applied the profile within 2 s of the lock clearing.
 
 ## Doctor
 

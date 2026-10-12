@@ -66,7 +66,7 @@ sampled claims confirmed) is summarised in the Research section at the end.
 | Identity | `desc:<make> <model> <serial>`; `desc:<make> <model>` when serial is empty; connector only when two identical monitors have no serial, with a warning in the panel | Hyprland matches `desc:` as a prefix up to the port name. hyprmon and hyprmoncfg both land here. |
 | Profiles | Keyed by the set of monitor identities present; one is active; an apply never deletes rules for monitors it does not include | nwg-displays #109 (settings erased for unplugged monitors) is the most-cited data-loss complaint. |
 | Profile names | `^[A-Za-z0-9][A-Za-z0-9 _-]{0,39}$`, used as the filename | Names become paths. |
-| Hotplug | The `service` entry point watches socket2 and, 2 seconds after the last `configreloaded`, runs `omarchy-displays hotplug`. No new daemon. | Omarchy's monitor-watch reacts to the same events and reloads; acting after its reload, with a debounce, avoids the two-actor race and the double apply when a dock enumerates monitors one at a time. |
+| Hotplug | The `service` entry point watches socket2 and, 2 seconds after the last `monitoradded`, `monitorremoved` or `configreloaded` event, runs `omarchy-displays hotplug`. No new daemon. | Omarchy's monitor-watch reacts to the same events and reloads; acting after its reload, with a debounce, avoids the two-actor race and the double apply when a dock enumerates monitors one at a time. |
 | Stock scale presets | Superseded while a profile covers the monitor. README and the panel say so. | `omarchy-hyprland-monitor-scaling` evals then writes `monitors.lua`; the generated file would silently win on the next reload. Saying so beats a surprise. |
 | Backups | `displays.lua.bak.<ts>`, keep the newest 10 | hyprmon's unbounded backups are a named complaint. |
 | Lua safety | Every string written into Lua is validated against `^[A-Za-z0-9 ._:@/+-]+$` and quoted; anything else refuses to apply with a non-zero exit | EDID strings are attacker-controlled. Omarchy sanitises connector names for the same reason in `omarchy-hyprland-monitor-scaling`. |
@@ -101,17 +101,36 @@ Resolve these in the step that first needs them; none blocks step 1.
    window, step 4 the drag.
 4. Whether a later `hl.monitor` rule for the same `desc:` replaces an earlier
    one (the override premise). Step 3's verification is the test.
-5. Whether socket2 `monitoraddedv2` fires before or after monitor-watch's
-   `hyprctl reload`, and whether `configreloaded` is a reliable "safe to act"
-   signal. Step 8 traces both with a real unplug on this machine.
+5. Resolved in step 8. Traced on this machine with `hyprctl output create
+   headless` / `output remove` and a `socat` on socket2. Add: `monitoradded>>`
+   and `monitoraddedv2>>3,HEADLESS-1,` at t+0.000 s, no `configreloaded`
+   within the next 8 s. Remove: `moveworkspace`, `destroyworkspace`, then
+   `monitorremoved>>` and `monitorremovedv2>>3,HEADLESS-1,` at t+0.000 s, no
+   `configreloaded` in the following 5 s. So monitor-watch does not reload on
+   a healthy hotplug: its reload (`recover_modeless`) fires only when a monitor
+   reports no mode, and the script logs nothing (no journal tag exists). The
+   monitor events are therefore the reliable "something changed" signal and
+   `configreloaded` is not. It is still watched, to catch monitor-watch's
+   modeless recovery reload. Our own persist reload emits `configreloaded`
+   twice about 13 ms apart; the resulting `hotplug` run prints `already
+   active` and does nothing, so there is no loop. A real unplug is still
+   untried (the user's checklist).
 6. The user's custom workspace pairing in `workspaces.lua` (Super+1..5
    switches two monitors at once). Step 7 decides whether the panel reads the
    assignment from `hyprctl workspacerules` and leaves the keybinds alone, or
    owns both. Default assumption: reads and leaves keybinds alone.
 7. Whether `omarchy plugin add` can run a post-install hook, or whether the
    panel must offer "Finish install" on first summon. Step 9.
-8. Which notification call Omarchy's own scripts use (`notify-send`,
-   `hl.notification`, or an `omarchy` helper). Step 8 greps and copies it.
+8. Resolved in step 8. Omarchy's own scripts call
+   `omarchy-notification-send "<headline>" ["<body>"]` (the `omarchy
+   notification send` helper, a `busctl` call to
+   `org.freedesktop.Notifications`): `default/hypr/helpers.lua` builds
+   `omarchy-notification-send -u low <message>`, the weather bar widget runs
+   `omarchy-notification-send "$(omarchy-weather-status)"`, and the shell's
+   reminders call it by path. Nothing under `/usr/share/omarchy/bin` uses
+   `notify-send`, `dunstify` or `hl.notification`; the helper's comment says
+   it avoids `notify-send` on purpose. `hotplug` calls the helper with the
+   headline only.
 
 ## Steps
 
@@ -294,6 +313,16 @@ the omarchy-sysmon style per `writing:technical-writing`. Unknown 7 settled.
 
 ## Deviation log
 
+- 2026-10-12, step 8: unknown 5 showed Hyprland emits no `configreloaded`
+  after a healthy hotplug, so the debounce also restarts on `monitoraddedv2`
+  and `monitorremovedv2` (the Hotplug decision row is amended). The live
+  test found `state` gave a monitor with no EDID the identity `desc: `, which
+  Hyprland matched against every monitor and moved all three real screens to
+  the headless position. `state` now uses the connector with the warning "no
+  EDID make or model; matched by connector". A virtual output must be created
+  with a fixed name (`hyprctl output create headless NAME`) for its profile to
+  match twice, since the default HEADLESS-N counter never reuses a number.
+
 - 2026-10-12, step 6: the plan's name regex allows a trailing space, which
   the verification asked to refuse, so the rule is now
   `^[A-Za-z0-9]([A-Za-z0-9 _-]{0,38}[A-Za-z0-9_-])?$` (same 1 to 40
@@ -314,6 +343,12 @@ the omarchy-sysmon style per `writing:technical-writing`. Unknown 7 settled.
   backs up `hyprland.lua` only on a run that changes it; `install-dev.sh` is
   replaced by `install.sh`.
 
+- 2026-10-12, step 8: hotplug was verified with a virtual headless output
+  (create and remove), not a cable, so the step stays unticked until the
+  user's real unplug check. The first live run moved all three screens:
+  a monitor with no EDID got the identity `desc: `, which matches every
+  monitor. `state` now gives such a monitor its connector, and the
+  validator refuses any identity that is a bare or blank `desc:`.
 - 2026-10-12, step 7: a Hyprland workspace rule only decides where a
   workspace is created; an existing one stays put. apply and persist now
   move existing workspaces to match the profile, and lapse and revert move

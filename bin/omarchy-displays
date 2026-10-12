@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # omarchy:summary=Show, apply, confirm, revert, and persist Hyprland monitor layouts
-# omarchy:args=state | workspaces | apply PROFILE.json [--timeout N] | confirm | revert | status | persist [PROFILE.json] | profile list|show|save|delete|activate|match | doctor | version | help
-# omarchy:examples=omarchy displays state | omarchy displays workspaces | omarchy displays apply desk.json | omarchy displays apply desk.json --timeout 30 | omarchy displays confirm | omarchy displays revert | omarchy displays status | omarchy displays persist | omarchy displays persist desk.json | omarchy displays profile list | omarchy displays profile save desk.json --activate | omarchy displays profile match | omarchy displays doctor
+# omarchy:args=state | workspaces | apply PROFILE.json [--timeout N] | confirm | revert | status | persist [PROFILE.json] | profile list|show|save|delete|activate|match | hotplug | doctor | version | help
+# omarchy:examples=omarchy displays state | omarchy displays workspaces | omarchy displays apply desk.json | omarchy displays apply desk.json --timeout 30 | omarchy displays confirm | omarchy displays revert | omarchy displays status | omarchy displays persist | omarchy displays persist desk.json | omarchy displays profile list | omarchy displays profile save desk.json --activate | omarchy displays profile match | omarchy displays hotplug | omarchy displays doctor
 
 VERSION=0.1.0
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
@@ -25,6 +25,9 @@ trap '[[ -z $TMP_FILE ]] || rm -f "$TMP_FILE"' EXIT
 # trailing newline, hence the explicit newline test in the validator.
 STRING_RE='^[A-Za-z0-9 ._:@/+-]+$'
 NUMBER_RE='^-?[0-9]+(\.[0-9]+)?$'
+# A desc: prefix with nothing after it matches every monitor, which once moved
+# all three screens at once; the identity must name something.
+IDENTITY_RE='^(desc:[A-Za-z0-9][A-Za-z0-9 ._:@/+-]*|[A-Za-z0-9][A-Za-z0-9-]*)$'
 # Workspace names include special:x and named workspaces, so the colon stays.
 WORKSPACE_RE='^[A-Za-z0-9:_-]+$'
 # A profile name becomes a filename: no leading dot, slash or space, and no
@@ -47,6 +50,7 @@ Usage: omarchy-displays <command>
   profile delete NAME             remove a saved profile
   profile activate NAME           mark a saved profile as the active one
   profile match                   print the saved profile whose monitors are exactly the connected ones; exit 1 if none
+  hotplug                         apply and persist the saved profile that matches the connected monitors, if any
   doctor                          check that hyprland.lua loads displays.lua and the running config has it
   loader-line                     print the line hyprland.lua must contain
   version                         print the version
@@ -76,6 +80,8 @@ cmd_state() {
     (map("\(.make) \(.model)") | group_by(.) | map({key: .[0], value: length}) | from_entries) as $count
     | map(
         if (.serial // "") != "" then . + {identity: "desc:\(.description)"}
+        elif ((.make // "") + (.model // "") | gsub(" "; "")) == "" then
+          . + {identity: .name, identityWarning: "no EDID make or model; matched by connector"}
         elif $count["\(.make) \(.model)"] == 1 then . + {identity: "desc:\(.make) \(.model)"}
         else . + {identity: .name,
                   identityWarning: "duplicate make and model without serial; matched by connector"}
@@ -116,8 +122,8 @@ VALIDATE='
      | .key as $i | .value as $m
      | if ($m | type) != "object" then "monitors[\($i)] must be an object"
        else
-         (if ($m | has("identity")) and ($m.identity | str_ok) then empty
-          else "monitors[\($i)].identity must be a string of [A-Za-z0-9 ._:@/+-]" end),
+         (if ($m | has("identity")) and ($m.identity | str_ok) and ($m.identity | test($id_re)) then empty
+          else "monitors[\($i)].identity must be desc:<make model ...> or a connector name; a bare or blank desc: matches every monitor" end),
          (if ($m.enabled | type) == "boolean" then empty
           else "monitors[\($i)].enabled must be true or false" end),
          (["mode", "position"][] as $k
@@ -173,7 +179,7 @@ RULES="$QDEF"'
 # Prints one problem per line for a readable profile file; no output means
 # every string and number in it is safe to write into Lua.
 profile_problems() {
-  jq -r --arg str_re "$STRING_RE" --arg num_re "$NUMBER_RE" --arg ws_re "$WORKSPACE_RE" "$VALIDATE" "$1"
+  jq -r --arg str_re "$STRING_RE" --arg num_re "$NUMBER_RE" --arg id_re "$IDENTITY_RE" --arg ws_re "$WORKSPACE_RE" "$VALIDATE" "$1"
 }
 
 # Exits 3 with the problems on stderr unless the file is a profile whose every
@@ -590,6 +596,32 @@ cmd_profile() {
   esac
 }
 
+# Run by the service after monitors change. Refuses while a countdown is live
+# (exit 2); no matching profile is normal and exits 0 without a notification.
+cmd_hotplug() {
+  local pid name count header=""
+  if pid=$(live_countdown_pid); then
+    echo "a countdown is already running (pid $pid); confirm or revert first"
+    exit 2
+  fi
+  if ! name=$(cmd_profile_match); then
+    count=$(cmd_state | jq 'length')
+    echo "no profile matches $count monitors"
+    return 0
+  fi
+  if [[ -f $HYPR_DIR/displays.lua ]]; then
+    header=$(sed -n 2p "$HYPR_DIR/displays.lua")
+  fi
+  if [[ $(active_name) == "$name" && $header == "-- Profile: $name" ]]; then
+    echo "already active: $name"
+    return 0
+  fi
+  set_active "$name"
+  cmd_persist >/dev/null
+  omarchy-notification-send "Displays: applied profile $name" >/dev/null 2>&1 || true
+  echo "applied $name"
+}
+
 cmd_doctor() {
   local missing=0 reply
   if grep -qF -- "$LOADER_LINE" "$HYPR_DIR/hyprland.lua" 2>/dev/null; then
@@ -622,6 +654,7 @@ case "${1:-}" in
   status) cmd_status ;;
   persist) shift; cmd_persist "$@" ;;
   profile) shift; cmd_profile "$@" ;;
+  hotplug) cmd_hotplug ;;
   doctor) cmd_doctor ;;
   loader-line) echo "$LOADER_LINE" ;;
   version) echo "$VERSION" ;;

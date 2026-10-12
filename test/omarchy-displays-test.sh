@@ -111,6 +111,18 @@ eq "workspaces: ruled entries are normalised, a rule without a monitor is droppe
   "$(jq -c . <<<"$out")" \
   '[{"workspace":"1","monitor":"desc:ASUSTek COMPUTER INC ASUS VG27V","default":true,"persistent":false},{"workspace":"6","monitor":"desc:Dell Inc. DELL SE2726H","default":true,"persistent":false},{"workspace":"11","monitor":"desc:Samsung Electric Company S27C31x","default":true,"persistent":true},{"workspace":"12","monitor":"desc:Samsung Electric Company S27C31x H9DWB00491","default":false,"persistent":false,"unruled":true},{"workspace":"9","monitor":"desc:Dell Inc. DELL SE2726H HG5QZB4","default":false,"persistent":false,"unruled":true}]'
 
+jq '. + [(.[0] | .name = "HEADLESS-9" | .make = "" | .model = "" | .serial = "" | .description = "")]' \
+  "$here/fixtures/monitors-three.json" > "$root/monitors-headless.json"
+export FAKE_FIXTURE="$root/monitors-headless.json"
+run state
+eq "state: a monitor with no EDID is matched by connector, not by an empty desc:" \
+  "$(jq -r '.[] | select(.name == "HEADLESS-9") | .identity' <<<"$out")" "HEADLESS-9"
+eq "state: a monitor with no EDID carries a warning" \
+  "$(jq -r '.[] | select(.name == "HEADLESS-9") | .identityWarning' <<<"$out")" \
+  "no EDID make or model; matched by connector"
+eq "state: monitors with an EDID are unaffected by it" \
+  "$(jq -r '[.[] | select(.name != "HEADLESS-9") | .identity | startswith("desc:")] | all' <<<"$out")" true
+
 export FAKE_FIXTURE="$here/fixtures/monitors-twins.json"
 run state
 eq "state twins: connector identities" \
@@ -609,6 +621,85 @@ $move6"
 reset
 run apply "$(profile wsq "$(jq '.workspaces = [{workspace: "6\" })", monitor: "desc:X", default: true, persistent: false}]' <<<"$desk")")"
 eq "settle: a quoted workspace name is refused before any hyprctl call" "$rc:$(log | wc -c)" "3:0"
+
+# hotplug: a fake notifier on PATH records what would have been shown
+export FAKE_NOTIFY_LOG="$root/notify.log"
+cat > "$root/bin/omarchy-notification-send" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_NOTIFY_LOG"
+FAKE
+chmod +x "$root/bin/omarchy-notification-send"
+active_file="$OMARCHY_DISPLAYS_CONFIG_DIR/active"
+export FAKE_FIXTURE="$here/fixtures/monitors-three.json"
+# The workspace cases wiped the store: rebuild exactly the profiles these cases name.
+rm -rf "$cfg/profiles" "$cfg/active"
+run profile save "$root/desk.json"
+run profile save "$root/nodell.json"
+run profile save "$root/pair.json"
+
+reset
+: > "$FAKE_NOTIFY_LOG"
+rm -rf "$hypr" "$last"
+run profile activate no-dell
+run apply "$root/desk.json" --timeout 5
+: > "$FAKE_LOG"
+run hotplug
+eq "hotplug during a countdown: exit 2" "$rc" 2
+eq "hotplug during a countdown: names the lock" "${out%% (pid*}" "a countdown is already running"
+eq "hotplug during a countdown: no hyprctl call" "$(log | wc -c)" 0
+eq "hotplug during a countdown: active profile untouched" "$(<"$active_file")" no-dell
+eq "hotplug during a countdown: displays.lua not written" "$([[ -e $hypr/displays.lua ]] && echo yes || echo no)" no
+eq "hotplug during a countdown: no notification" "$(wc -c < "$FAKE_NOTIFY_LOG")" 0
+run revert
+
+reset
+: > "$FAKE_NOTIFY_LOG"
+rm -rf "$hypr" "$last"
+run profile activate no-dell
+run hotplug
+eq "hotplug, matching profile not active: exit 0" "$rc" 0
+eq "hotplug, matching profile not active: prints applied" "$out" "applied desk"
+eq "hotplug, matching profile not active: active file names it" "$(<"$active_file")" desk
+eq "hotplug, matching profile not active: displays.lua header names it" "$(sed -n 2p "$hypr/displays.lua")" "-- Profile: desk"
+eq "hotplug, matching profile not active: exactly one reload" "$(log | grep -c '^reload$')" 1
+eq "hotplug, matching profile not active: notification text" "$(<"$FAKE_NOTIFY_LOG")" "Displays: applied profile desk"
+
+reset
+: > "$FAKE_NOTIFY_LOG"
+before=$(cksum < "$hypr/displays.lua")
+run hotplug
+eq "hotplug, already active and persisted: prints already active" "$out" "already active: desk"
+eq "hotplug, already active and persisted: no reload" "$(log | wc -c)" 0
+eq "hotplug, already active and persisted: file untouched" "$(cksum < "$hypr/displays.lua")" "$before"
+eq "hotplug, already active and persisted: no notification" "$(wc -c < "$FAKE_NOTIFY_LOG")" 0
+
+reset
+sed -i '2s/.*/-- Profile: pair/' "$hypr/displays.lua"
+run hotplug
+eq "hotplug, active but displays.lua names another profile: reapplies" "$out" "applied desk"
+eq "hotplug, active but displays.lua names another profile: header fixed" "$(sed -n 2p "$hypr/displays.lua")" "-- Profile: desk"
+
+reset
+: > "$FAKE_NOTIFY_LOG"
+export FAKE_FIXTURE="$here/fixtures/monitors-twins.json"
+before=$(cksum < "$hypr/displays.lua")
+run hotplug
+eq "hotplug, no matching profile: exit 0" "$rc" 0
+eq "hotplug, no matching profile: says how many monitors" "$out" "no profile matches $(jq length "$FAKE_FIXTURE") monitors"
+eq "hotplug, no matching profile: no hyprctl call" "$(log | wc -c)" 0
+eq "hotplug, no matching profile: displays.lua untouched" "$(cksum < "$hypr/displays.lua")" "$before"
+eq "hotplug, no matching profile: no notification" "$(wc -c < "$FAKE_NOTIFY_LOG")" 0
+export FAKE_FIXTURE="$here/fixtures/monitors-three.json"
+
+reset
+run apply "$(profile blankdesc '{"schemaVersion":1,"name":"blankdesc","monitors":[{"identity":"desc: ","enabled":true,"mode":"1920x1080@60","position":"0x0","scale":1}]}')"
+eq "identity 'desc: ' is refused: exit 3" "$rc" 3
+eq "identity 'desc: ' is refused: no hyprctl call" "$(log | wc -l)" 0
+run apply "$(profile baredesc '{"schemaVersion":1,"name":"baredesc","monitors":[{"identity":"desc:","enabled":true,"mode":"1920x1080@60","position":"0x0","scale":1}]}')"
+eq "identity 'desc:' is refused: exit 3" "$rc" 3
+run apply "$(profile connector '{"schemaVersion":1,"name":"connector","monitors":[{"identity":"HDMI-A-1","enabled":true,"mode":"1920x1080@60","position":"0x0","scale":1}]}')"
+eq "identity connector name is accepted" "$rc" 0
+run confirm
 
 printf '\n%d passed, %d failed\n' "$passes" "$fails"
 exit $((fails > 0))
