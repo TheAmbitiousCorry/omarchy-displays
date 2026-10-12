@@ -155,7 +155,7 @@ present and live), and `install.sh` which adds the require line, verifies it
 with a sentinel rule, and symlinks the plugin and the CLI. Keep in the panel
 now calls `confirm` then `persist`.
 
-- [ ] Verification: with `monitors.lua` still saying 75Hz for the Samsung,
+- [x] Verification: with `monitors.lua` still saying 75Hz for the Samsung,
       keeping a 60Hz change writes `displays.lua`, and `hyprctl reload`
       leaves the Samsung at 60.0 (unknown 4 settled). Removing the require
       line makes `doctor` exit non-zero and `install.sh` restore it. Twelve
@@ -260,6 +260,16 @@ the omarchy-sysmon style per `writing:technical-writing`. Unknown 7 settled.
 - Spec domain: docs, install.
 
 ## Deviation log
+
+- 2026-10-12, step 3: no departure on the loader (`hyprctl reload` runs a
+  fresh Lua state, so `pcall(require, "hypr.displays")` stands). The sentinel
+  rule became a marker: `hyprctl eval` prints only `ok` or an error, so
+  `doctor` asserts `OMARCHY_DISPLAYS_LOADED` equals the version instead of
+  applying and reading back a rule. Added `persist --empty` (so a fresh
+  install has a marker) and `loader-line`; profile `name` now passes the
+  string whitelist because it is written into a Lua comment; `install.sh`
+  backs up `hyprland.lua` only on a run that changes it; `install-dev.sh` is
+  replaced by `install.sh`.
 
 - 2026-10-12, step 2: the shell does not see QML edits made through the
   plugin symlink, so a changed Panel.qml needs `omarchy restart shell`;

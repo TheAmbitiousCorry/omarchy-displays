@@ -9,7 +9,7 @@ import "Model.js" as Model
 
 // Monitor layout panel. Every change to the system goes through the
 // omarchy-displays CLI; this file only reads `state` and `status` and calls
-// apply, confirm and revert.
+// apply, confirm, persist and revert.
 Item {
   id: root
 
@@ -91,7 +91,8 @@ Item {
 
   function keep() {
     counting = false
-    run("confirm", [cliPath, "confirm"])
+    // Exit 100 means confirm itself failed; any other non-zero is persist's.
+    run("keep", ["bash", "-c", '"$1" confirm || exit 100; "$1" persist', "displays-keep", cliPath])
   }
 
   function revert() {
@@ -160,8 +161,10 @@ Item {
         } else {
           root.error = code === 2 ? "A countdown is already running" : "Apply failed (exit " + code + ")"
         }
-      } else if (code !== 0 && root.lastAction === "confirm") {
+      } else if (code === 100 && root.lastAction === "keep") {
         root.error = "Nothing to keep"
+      } else if (code !== 0 && root.lastAction === "keep") {
+        root.error = "Kept but not saved (exit " + code + ")"
       } else if (code !== 0) {
         root.error = "Revert failed (exit " + code + ")"
       }

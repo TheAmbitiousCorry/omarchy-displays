@@ -7,7 +7,7 @@ last-verified: 2026-10-12
 
 `bin/omarchy-displays` reads Hyprland's monitor state, applies a profile live, and reverts it unless the change is confirmed in time. It needs only bash, coreutils, `jq` and `hyprctl`, and works from a TTY.
 
-Commands: `state`, `apply <profile.json> [--timeout N]`, `confirm`, `revert`, `status`, `help`. The hidden `_countdown` command is the detached countdown process and is not for direct use.
+Commands: `state`, `apply <profile.json> [--timeout N]`, `confirm`, `revert`, `status`, `persist [profile.json]`, `doctor`, `loader-line`, `version`, `help`. `version` prints `0.1.0`. The hidden `_countdown` command is the detached countdown process and is not for direct use.
 
 ## Profile schema
 
@@ -16,7 +16,7 @@ A profile is a JSON object, schema version 1.
 | Field | Type | Meaning |
 |---|---|---|
 | `schemaVersion` | number | Must be `1`. |
-| `name` | string | Profile name. Required; not written into Lua. |
+| `name` | string | Profile name. Required; must pass the string whitelist because `persist` writes it into a Lua comment. |
 | `monitors` | array | Non-empty. One object per monitor. |
 | `workspaces` | array | Reserved. Accepted and ignored. |
 
@@ -54,9 +54,9 @@ Every other field in `state` output is Hyprland's own, passed through unchanged;
 
 ## Apply and countdown semantics
 
-`apply` validates the whole profile first (see [Exit codes](#exit-codes) and the `lua-whitelist` entry in [conventions](./core/conventions.md)). It then checks the lock, takes it, and runs one `hyprctl eval` of an `hl.monitor({...})` rule per monitor, in file order. Eval is the live path because `hyprctl keyword monitor` is rejected under the Lua config. If any eval does not answer `ok`, `apply` runs `hyprctl reload`, releases the lock and exits 1.
+`apply` validates the whole profile first (see [Exit codes](#exit-codes) and the `lua-whitelist` entry in [conventions](./core/conventions.md)); `persist` runs the same validator. It then checks the lock, takes it, and runs one `hyprctl eval` of an `hl.monitor({...})` rule per monitor, in file order. Eval is the live path because `hyprctl keyword monitor` is rejected under the Lua config. If any eval does not answer `ok`, `apply` runs `hyprctl reload`, releases the lock and exits 1.
 
-After the evals, `apply` writes the lock's `deadline` file and starts the countdown with `setsid`, stdin, stdout and stderr on `/dev/null`, so it survives its caller. It prints `applied N monitors; countdown Ns (pid P)` and exits 0 at once. The countdown polls every 0.2 seconds for the `confirmed` file for `--timeout` seconds (positive integer, default 15). On confirmation it removes the lock. On timeout it runs `hyprctl reload`, which discards every eval'd change and restores the file state, then removes the lock. Both end with exit 0.
+After the evals, `apply` copies the validated profile to `$XDG_RUNTIME_DIR/omarchy-displays/last-applied.json`, outside the lock directory so it survives `confirm`. It then writes the lock's `deadline` file and starts the countdown with `setsid`, stdin, stdout and stderr on `/dev/null`, so it survives its caller. It prints `applied N monitors; countdown Ns (pid P)` and exits 0 at once. The countdown polls every 0.2 seconds for the `confirmed` file for `--timeout` seconds (positive integer, default 15). On confirmation it removes the lock. On timeout it runs `hyprctl reload`, which discards every eval'd change and restores the file state, then removes the lock. Both end with exit 0.
 
 `confirm` touches `confirmed`, waits up to 2 seconds for the lock to disappear, and exits 0. With no live countdown it prints `nothing to confirm` and exits 1.
 
@@ -75,9 +75,9 @@ The lock is the directory `$XDG_RUNTIME_DIR/omarchy-displays/countdown` (falling
 | Code | Meaning |
 |---|---|
 | 0 | Success. |
-| 1 | `confirm` with no countdown; a `hyprctl eval` or `reload` that failed. |
+| 1 | `confirm` with no countdown; a `hyprctl eval` or `reload` that failed; `doctor` found something missing. |
 | 2 | `apply` refused because a countdown is live. |
-| 3 | Invalid input: unreadable or malformed profile, schema violation, a string or number that fails the whitelist, bad `--timeout`, unknown command or option. No `hyprctl` call is made. |
+| 3 | Invalid input: unreadable or malformed profile, schema violation, a string or number that fails the whitelist, bad `--timeout`, unknown command or option, `persist` with no argument and no `last-applied.json`. No `hyprctl` call is made and nothing is written. |
 
 Validation problems are written to stderr, one per line.
 
@@ -91,6 +91,51 @@ hl.monitor({ output = "desc:Samsung Electric Company S27C31x H9DWB00491", mode =
 
 Fields appear in this fixed order: `output`, `disabled`, `mode`, `position`, `scale`, `transform`, `mirror`, `vrr`, `bitdepth`, `cm`, `sdrbrightness`, `sdrsaturation`. Strings are double-quoted and numbers bare. An enabled monitor never carries `disabled`. A disabled monitor carries only `output` and `disabled = true`; any `mode`, `position` and `scale` it carries are validated but not written.
 
+## Persist
+
+`persist [profile.json]` makes a layout survive reloads and restarts. With no argument it reads `last-applied.json`, the profile most recently given to `apply`; with neither, it exits 3. `last-applied.json` lives in the runtime directory, so it is gone after a logout; a later step makes the saved active profile the fallback. It validates the profile exactly as `apply` does, then writes `$OMARCHY_DISPLAYS_HYPR_DIR/displays.lua` (default `~/.config/hypr/displays.lua`) and runs `hyprctl reload`, once. If the reload fails the file stays written and `persist` exits 1.
+
+The file has this shape:
+
+```lua
+-- Generated by omarchy-displays 0.1.0. Do not edit: the next persist overwrites it.
+-- Profile: desk
+OMARCHY_DISPLAYS_LOADED = "0.1.0"
+hl.monitor({ ... })
+```
+
+One writer: `apply` (through `hyprctl eval`) and `persist` (into the file) take their rule lines from the same jq program, so the eval lines and the file lines are byte-identical for a profile.
+
+The write is atomic: a temp file in the same directory, then `mv`. A refused profile touches nothing. Before an existing `displays.lua` is overwritten it is copied to `displays.lua.bak.<epoch>`; the epoch is bumped past the newest existing backup when needed, so two persists in one second keep distinct backups, and all but the newest 10 are deleted.
+
+`persist --empty` writes the same file with the `OMARCHY_DISPLAYS_LOADED` line, `-- Profile: (none)` and no rules. `install.sh` uses it so `doctor` has a marker to read before any profile exists.
+
+Facts about Hyprland 0.56.2, checked on this machine:
+
+- `hyprctl reload` runs the config in a fresh Lua state. A module loaded with `require` is re-read from disk each time and globals set by a removed module are gone, so `pcall(require, "hypr.displays")` is the loader and no `dofile` is needed.
+- `hyprctl eval` prints only `ok`, or `error: ...` with exit status 7. It never prints a return value, so a check is an `assert`.
+- A rule in `displays.lua` wins over an earlier rule for the same monitor in `monitors.lua`: with `monitors.lua` saying 75 Hz, a persisted 60 Hz profile held 60 Hz across `hyprctl reload`.
+- A syntax error in `displays.lua` makes `hyprctl configerrors` name only that file; the `pcall` keeps the rest of the config, and the binds, loading.
+
+## Doctor
+
+`doctor` never modifies anything. It checks two things: `hyprland.lua` in `$OMARCHY_DISPLAYS_HYPR_DIR` contains the loader line (`omarchy-displays loader-line`), and the running config answers `ok` to `hyprctl eval 'assert(OMARCHY_DISPLAYS_LOADED == "0.1.0")'`. Both pass: it prints `ok: pcall(require, "hypr.displays") is live` and exits 0. Otherwise it prints one `missing:` line per failed check and exits 1. After a version upgrade it fails until the next `persist` rewrites the marker. Any `OMARCHY_DISPLAYS_LOADED` value proves the file is loaded; a value other than the CLI's version adds a note and still exits 0.
+
+## Install
+
+`install.sh` (repo root, safe to re-run) symlinks the plugin into `~/.config/omarchy/plugins/` and the CLI into `~/.local/bin/`, enables the plugin, then edits the Hyprland config:
+
+- Backs up `hyprland.lua` to `hyprland.lua.bak.<epoch>`, only on a run that is about to change it.
+- Inserts the loader line immediately before the line containing `require("default.hypr.toggles")`, or appends it if there is no such line. It skips this if the line is already present.
+
+The loader line, exactly:
+
+```lua
+pcall(require, "hypr.displays")
+```
+
+It sits after the user's `hypr.monitors` require so generated rules win, and before the toggles so Omarchy's laptop-disable toggle still wins. If `displays.lua` does not exist it runs `persist --empty`. It then runs `hyprctl reload` and `doctor`, and exits with doctor's status. `~/.config/hypr/monitors.lua` is never read or written.
+
 ## Panel
 
 The `kr34t1v.displays` plugin (`plugin/`, kind `panel`) opens from `omarchy-shell shell summon kr34t1v.displays '{}'` on the focused screen and closes on Escape. It never touches Hyprland or the disk itself: it runs `omarchy-displays` (the `cliPath` property, default `omarchy-displays` on `PATH`) and nothing else.
@@ -100,7 +145,7 @@ It shows the connected monitors from `state` as one rectangle each, to scale. A 
 Actions:
 
 - **Apply** builds a schema version 1 profile from the shown monitors (`mode` as `WIDTHxHEIGHT@HZ` with the refresh rate rounded, `position` as `XxY`) into a temporary file and runs `apply <file> --timeout 15`. On exit 0 the panel reads `status` and the stock `ConfirmDialog` opens. Exit 2 shows that a countdown is already running.
-- **Keep** (the dialog's confirm button) runs `confirm`.
+- **Keep** (the dialog's confirm button) runs `confirm` and then `persist` in one invocation. A failed `confirm` shows "Nothing to keep"; a failed `persist` after a successful `confirm` shows "Kept but not saved (exit N)".
 - **Revert** (the button, the dialog's cancel button, or Escape in the dialog) runs `revert`.
 - The dialog mirrors `status`: the panel polls it on open, after `apply` exits 0, and every second while the dialog shows. The dialog is open exactly while `countdown` is non-null and shows its `remaining`, so reopening the panel mid-countdown shows the dialog with the right seconds. When `status` flips to null the CLI has confirmed or reloaded, the dialog closes and the panel re-reads `state`.
 - **Identify** shows a large badge for 3 seconds on every screen, numbered as the rectangles are. A badge sits on the screen whose name equals the monitor's connector.
