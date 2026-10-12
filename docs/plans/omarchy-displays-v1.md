@@ -170,7 +170,7 @@ Delivers drag-to-arrange with edge and corner snapping, overlap rejection,
 gap detection and zoom-to-fit, as pure functions in `Model.js` with `node`
 tests.
 
-- [ ] Verification: tests cover snap within threshold, no snap outside it,
+- [x] Verification: tests cover snap within threshold, no snap outside it,
       corner-to-corner, overlap rejected, rotated monitor uses swapped
       dimensions, scaled monitor uses logical size. In the panel, drag the
       Dell from above the ASUS to its right, Keep: `displays.lua` holds
@@ -271,6 +271,11 @@ the omarchy-sysmon style per `writing:technical-writing`. Unknown 7 settled.
   backs up `hyprland.lua` only on a run that changes it; `install-dev.sh` is
   replaced by `install.sh`.
 
+- 2026-10-12, step 4: no pointer-synthesis tool on this machine, so the
+  mouse drag was verified only through its shared code path (keyboard
+  nudge walks the same applyDrag). A real drag and the Keep that follows
+  are on the user's checklist. Nudge uses a smaller snap radius than
+  drag, or every 10 px step snapped back to the edge it left.
 - 2026-10-12, step 2: the shell does not see QML edits made through the
   plugin symlink, so a changed Panel.qml needs `omarchy restart shell`;
   install-dev.sh says so. Roast moved the countdown clock into the CLI

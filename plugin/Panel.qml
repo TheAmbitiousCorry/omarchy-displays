@@ -28,11 +28,21 @@ Item {
   property bool counting: false
   property int remaining: 0
   property string lastAction: ""
+  property int dragIndex: -1
+
+  readonly property int snapPixels: 16
+  readonly property int nudgeStep: 10
 
   readonly property var selected: monitors.length > 0 ? monitors[Math.min(selectedIndex, monitors.length - 1)] : null
   readonly property var rects: monitors.map(Model.logicalRect)
   readonly property var box: Model.bounds(rects)
   readonly property real fit: Model.fitScale(rects, canvas.width, canvas.height, Style.space(24))
+  readonly property var gapIndexes: Model.gaps(rects)
+  readonly property string gapText: {
+    if (gapIndexes.length === 0) return ""
+    var names = gapIndexes.map(function(i) { return Model.shortName(monitors[i]) })
+    return "Gap: " + names.join(", ") + (names.length === 1 ? " is" : " are") + " not touching another monitor"
+  }
 
   function open(payloadJson) {
     refreshState()
@@ -70,6 +80,20 @@ Item {
     patch[axis] = value
     next[index] = Object.assign({}, next[index], patch)
     monitors = next
+  }
+
+  // Moves a monitor by (dx, dy) layout pixels from `base` rects, snapped and pushed out of overlaps.
+  function moveMonitor(index, base, dx, dy, threshold) {
+    if (index < 0 || index >= monitors.length) return
+    var p = Model.applyDrag(index, base, dx, dy, threshold)
+    var next = monitors.slice()
+    next[index] = Object.assign({}, next[index], { x: p.x, y: p.y })
+    monitors = next
+  }
+
+  // A snap radius at or above the step would pull every nudge back to the edge it left.
+  function nudge(dx, dy, step) {
+    moveMonitor(selectedIndex, rects, dx, dy, step > 1 ? Math.floor(step / 2) - 1 : 0)
   }
 
   function run(action, command) {
@@ -202,7 +226,18 @@ Item {
       Keys.priority: Keys.BeforeItem
       Keys.onPressed: function(event) {
         if (dialog.handleKey(event)) { event.accepted = true; return }
-        if (event.key === Qt.Key_Escape) { root.dismiss(); event.accepted = true }
+        if (event.key === Qt.Key_Escape) { root.dismiss(); event.accepted = true; return }
+        var step = (event.modifiers & Qt.ShiftModifier) ? 1 : root.nudgeStep
+        var arrows = {}
+        arrows[Qt.Key_Left] = [-step, 0]
+        arrows[Qt.Key_Right] = [step, 0]
+        arrows[Qt.Key_Up] = [0, -step]
+        arrows[Qt.Key_Down] = [0, step]
+        var d = arrows[event.key]
+        if (d !== undefined && root.selected !== null && !root.counting) {
+          root.nudge(d[0], d[1], step)
+          event.accepted = true
+        }
       }
 
       BorderSurface {
@@ -258,21 +293,22 @@ Item {
             clip: true
 
             Repeater {
-              model: root.rects
+              // An integer model keeps delegates alive while a drag rewrites `monitors`.
+              model: root.monitors.length
 
               BorderSurface {
                 required property int index
-                required property var modelData
-                readonly property var rect: modelData
+                readonly property var rect: root.rects[index] || ({ x: 0, y: 0, width: 0, height: 0 })
                 readonly property var monitor: root.monitors[index] || ({ model: "", name: "" })
                 readonly property bool isSelected: index === root.selectedIndex
+                readonly property bool dragging: index === root.dragIndex
 
                 x: (canvas.width - root.box.width * root.fit) / 2 + (rect.x - root.box.x) * root.fit
                 y: (canvas.height - root.box.height * root.fit) / 2 + (rect.y - root.box.y) * root.fit
                 width: rect.width * root.fit
                 height: rect.height * root.fit
                 color: isSelected ? Style.selectedAccentFill : Style.normalFill
-                borderSpec: isSelected
+                borderSpec: isSelected || dragging
                   ? Border.flat(Color.accent, Math.max(2, Style.normalBorderWidth * 2))
                   : Border.flat(Style.normalBorderColor, Style.normalBorderWidth)
                 radius: Style.cornerRadius
@@ -306,12 +342,47 @@ Item {
                 }
 
                 MouseArea {
+                  id: grab
                   anchors.fill: parent
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: root.selectedIndex = index
+                  cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+
+                  // Pointer position and layout are frozen at press so the moving
+                  // bounding box cannot feed back into the delta.
+                  property point pressPoint: Qt.point(0, 0)
+                  property real pressFit: 1
+                  property var pressRects: []
+
+                  onPressed: function(mouse) {
+                    root.selectedIndex = index
+                    root.dragIndex = index
+                    pressPoint = mapToItem(canvas, mouse.x, mouse.y)
+                    pressFit = root.fit
+                    pressRects = root.rects
+                  }
+                  onPositionChanged: function(mouse) {
+                    if (!pressed) return
+                    var p = mapToItem(canvas, mouse.x, mouse.y)
+                    root.moveMonitor(index, pressRects,
+                      (p.x - pressPoint.x) / pressFit, (p.y - pressPoint.y) / pressFit,
+                      Math.round(root.snapPixels / pressFit))
+                  }
+                  onReleased: root.dragIndex = -1
+                  onCanceled: root.dragIndex = -1
                 }
               }
             }
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            Layout.fillWidth: true
+            Layout.preferredHeight: gapMetrics.height
+            text: root.gapText
+            color: Color.urgent
+            font.family: Style.font.family
+            font.pixelSize: Style.font.bodySmall
+            elide: Text.ElideRight
+            TextMetrics { id: gapMetrics; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall; text: "Gap" }
           }
 
           RowLayout {
