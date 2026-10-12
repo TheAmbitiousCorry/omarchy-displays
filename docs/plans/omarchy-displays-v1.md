@@ -34,9 +34,10 @@ sampled claims confirmed) is summarised in the Research section at the end.
 - Brightness, night light and text size. The stock `omarchy.monitor` bar
   widget and `omarchy display text size` already do these. The panel links to
   them, it does not reimplement them.
-- Patching the stock `omarchy.monitor` widget. Its scale presets are
-  superseded while a profile is active (see Decisions); v1 documents that
-  rather than forking the widget.
+- Rewriting the stock `omarchy.monitor` widget. Step 8b clones it the
+  Omarchy way and patches in one Configure button; its scale presets are
+  superseded while a profile is active (see Decisions) and the README says
+  so rather than removing them.
 - ICC profiles, HDR tuning beyond the `cm` preset and SDR brightness and
   saturation, custom modelines, DDC/CI. All possible later through the same
   per-monitor field model; none in v1.
@@ -245,6 +246,24 @@ recorded in the spec.
       retries after it clears.
 - Spec domain: engine.
 
+### 8b. Entry points: bar widget button and launcher entry
+
+Delivers (1) a Configure button at the foot of the stock Display widget's
+DISPLAYS section, added by cloning `omarchy.monitor` with
+`omarchy plugin clone` and applying `patches/configure-button.patch` from
+`install.sh`, the pattern omarchy-sysmon uses for its bar fork; the button
+summons `kr34t1v.displays` through the clone's shell facade; (2) a desktop
+entry `omarchy-displays.desktop` in `~/.local/share/applications/` with
+Keywords monitor, display, displays, screen, so the launcher finds the
+panel; (3) install.sh does both idempotently.
+
+- [ ] Verification: the bar's Display widget shows Configure under its
+      displays list and clicking it (or Return on it) opens the panel.
+      Typing "monitor" and "displays" in the Omarchy launcher lists
+      "Displays" and launching it opens the panel. `install.sh` twice
+      leaves one clone and one desktop file. Screenshots under `.proof/`.
+- Spec domain: install, ui.
+
 ### 9. Uninstall, menu, docs
 
 Delivers `uninstall.sh` (restores `hyprland.lua` from its backup, removes
@@ -271,6 +290,9 @@ the omarchy-sysmon style per `writing:technical-writing`. Unknown 7 settled.
   backs up `hyprland.lua` only on a run that changes it; `install-dev.sh` is
   replaced by `install.sh`.
 
+- 2026-10-12, user scope change: a Configure button in the stock Display
+  bar widget and a launcher entry, added as step 8b; the non-goal on the
+  stock widget narrowed to "no rewrite".
 - 2026-10-12, step 5a: verified by keyboard: unclean scale blocks Apply,
   1.5 reads 1280x720, the mode dropdown selects 120 Hz, transform 1 on the
   Dell applied live and lapsed. The Apply button cannot be reached by Tab
