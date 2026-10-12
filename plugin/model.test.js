@@ -262,3 +262,136 @@ test("toProfile emits scale as a number and keeps the transform", () => {
 test("toProfile trims float noise from a reported scale", () => {
   assert.strictEqual(Model.toProfile([mon({ scale: 1.2000000476837158 })], "p").monitors[0].scale, 1.2)
 })
+
+test("vrrOptions lists the four Hyprland modes in order", () => {
+  const o = Model.vrrOptions()
+  assert.deepStrictEqual([...o.map((x) => x.value)], [0, 1, 2, 3])
+  assert.deepStrictEqual([...o.map((x) => x.label)], ["Off", "On", "Fullscreen only", "Fullscreen with video or game"])
+})
+
+test("bitdepthOptions offers exactly 8 and 10", () => {
+  assert.deepStrictEqual([...Model.bitdepthOptions().map((x) => x.value)], [8, 10])
+})
+
+test("cmOptions lists the nine presets and marks both hdr presets experimental", () => {
+  const o = Model.cmOptions()
+  assert.deepStrictEqual([...o.map((x) => x.value)], ["auto", "srgb", "dcip3", "dp3", "adobe", "wide", "edid", "hdr", "hdredid"])
+  const experimental = o.filter((x) => x.label.includes("(experimental)")).map((x) => x.value)
+  assert.deepStrictEqual([...experimental], ["hdr", "hdredid"])
+})
+
+const trio = () => [
+  mon({ name: "DP-1", identity: "desc:A one", model: "One" }),
+  mon({ name: "DP-2", identity: "desc:B two", model: "Two" }),
+  mon({ name: "DP-3", identity: "desc:C three", model: "" }),
+]
+
+test("mirrorOptions starts with None, then every other monitor as shortName (connector)", () => {
+  const o = Model.mirrorOptions(trio(), 0)
+  assert.deepStrictEqual(Array.from(o, (x) => [x.label, x.value]), [
+    ["None", null], ["Two (DP-2)", "desc:B two"], ["DP-3 (DP-3)", "desc:C three"],
+  ])
+})
+
+test("mirrorOptions leaves out the monitor itself and disabled monitors", () => {
+  const m = trio()
+  m[2].disabled = true
+  const values = Model.mirrorOptions(m, 0).map((x) => x.value)
+  assert.ok(!values.includes("desc:A one"))
+  assert.ok(!values.includes("desc:C three"))
+  assert.ok(values.includes("desc:B two"))
+})
+
+test("mirrorOptions leaves out a monitor that already mirrors this one", () => {
+  const m = trio()
+  m[1].mirror = "desc:A one"
+  assert.ok(!Model.mirrorOptions(m, 0).map((x) => x.value).includes("desc:B two"))
+})
+
+test("mirrorPatch maps the None option back to null and keeps an identity", () => {
+  assert.deepStrictEqual({ ...Model.mirrorPatch("null") }, { mirror: null })
+  assert.deepStrictEqual({ ...Model.mirrorPatch("desc:B two") }, { mirror: "desc:B two" })
+})
+
+test("toProfile omits every advanced field a plain state monitor does not carry", () => {
+  const m = Model.toProfile([mon({})], "p").monitors[0]
+  for (const k of ["mirror", "vrr", "bitdepth", "cm", "sdrbrightness", "sdrsaturation"]) assert.ok(!(k in m), k)
+})
+
+test("toProfile maps state's colour fields to cm, sdrbrightness and sdrsaturation", () => {
+  const m = Model.toProfile([mon({ colorManagementPreset: "srgb", sdrBrightness: 1.2, sdrSaturation: 0.98 })], "p").monitors[0]
+  assert.strictEqual(m.cm, "srgb")
+  assert.strictEqual(m.sdrbrightness, 1.2)
+  assert.strictEqual(m.sdrsaturation, 0.98)
+})
+
+test("toProfile trims float noise from reported sdr values", () => {
+  const m = Model.toProfile([mon({ sdrBrightness: 1.2000000476837158 })], "p").monitors[0]
+  assert.strictEqual(m.sdrbrightness, 1.2)
+})
+
+test("toProfile maps the reported vrr boolean to 0 or 1", () => {
+  assert.strictEqual(Model.toProfile([mon({ vrr: false })], "p").monitors[0].vrr, 0)
+  assert.strictEqual(Model.toProfile([mon({ vrr: true })], "p").monitors[0].vrr, 1)
+})
+
+test("toProfile lets a user-set vrrMode win over the reported boolean, including 0", () => {
+  assert.strictEqual(Model.toProfile([mon({ vrr: false, vrrMode: 2 })], "p").monitors[0].vrr, 2)
+  assert.strictEqual(Model.toProfile([mon({ vrr: true, vrrMode: 0 })], "p").monitors[0].vrr, 0)
+})
+
+test("toProfile emits bitdepth only once it is set", () => {
+  assert.strictEqual(Model.toProfile([mon({ bitdepth: 10 })], "p").monitors[0].bitdepth, 10)
+})
+
+test("toProfile lets an edited cm replace the reported preset", () => {
+  const m = Model.toProfile([mon({ colorManagementPreset: "srgb", cm: "wide" })], "p").monitors[0]
+  assert.strictEqual(m.cm, "wide")
+})
+
+test("toProfile emits mirror when the target is another enabled monitor", () => {
+  const m = trio()
+  m[0].mirror = "desc:B two"
+  assert.strictEqual(Model.toProfile(m, "p").monitors[0].mirror, "desc:B two")
+})
+
+test("toProfile drops a mirror whose target is disabled or gone, and for a null mirror", () => {
+  const m = trio()
+  m[0].mirror = "desc:B two"
+  m[1].disabled = true
+  assert.ok(!("mirror" in Model.toProfile(m, "p").monitors[0]))
+  m[0].mirror = "desc:not plugged in"
+  assert.ok(!("mirror" in Model.toProfile(m, "p").monitors[0]))
+  m[0].mirror = null
+  assert.ok(!("mirror" in Model.toProfile(m, "p").monitors[0]))
+})
+
+test("toProfile writes only enabled:false for a disabled monitor, whatever advanced fields it carries", () => {
+  const m = Model.toProfile([mon({ disabled: true, vrr: true, cm: "wide", bitdepth: 10 })], "p").monitors[0]
+  assert.deepStrictEqual(Object.keys(m).sort(), ["connector", "enabled", "identity"])
+})
+
+test("parseRanged accepts the bounds, rejects just outside them and non-numbers", () => {
+  assert.strictEqual(Model.parseRanged("1", 1, 2), 1)
+  assert.strictEqual(Model.parseRanged("2", 1, 2), 2)
+  assert.strictEqual(Model.parseRanged("0.99", 1, 2), null)
+  assert.strictEqual(Model.parseRanged("2.01", 1, 2), null)
+  assert.strictEqual(Model.parseRanged("abc", 1, 2), null)
+  assert.strictEqual(Model.parseRanged("", 0, 2), null)
+  assert.strictEqual(Model.parseRanged("0", 0, 2), 0)
+})
+
+test("hasOverlap is false for two rects that only touch, true once they overlap by one pixel", () => {
+  const a = { x: 0, y: 0, width: 100, height: 100 }
+  assert.strictEqual(Model.hasOverlap([a, { x: 100, y: 0, width: 100, height: 100 }]), false)
+  assert.strictEqual(Model.hasOverlap([a, { x: 0, y: 100, width: 100, height: 100 }]), false)
+  assert.strictEqual(Model.hasOverlap([a, { x: 99, y: 0, width: 100, height: 100 }]), true)
+})
+
+test("hasOverlap finds an overlap between non-adjacent rects and handles zero or one rect", () => {
+  const far = { x: 500, y: 500, width: 10, height: 10 }
+  const rects = [{ x: 0, y: 0, width: 100, height: 100 }, far, { x: 50, y: 50, width: 100, height: 100 }]
+  assert.strictEqual(Model.hasOverlap(rects), true)
+  assert.strictEqual(Model.hasOverlap([far]), false)
+  assert.strictEqual(Model.hasOverlap([]), false)
+})

@@ -144,16 +144,41 @@ It shows the connected monitors from `state` as one rectangle each, to scale. A 
 
 With a monitor selected the arrow keys nudge it 10 layout pixels, Shift+arrow 1, through the same path. A nudge snaps only within 4 pixels (none for Shift), because a snap radius at or above the step would pull every nudge back to the edge it left. Escape still closes the panel.
 
-When a monitor shares no edge segment or corner with another, a line under the canvas reads "Gap: <model> is not touching another monitor" in the urgent colour. Apply stays enabled, since Hyprland accepts gaps. Below the canvas, two number fields edit the selected monitor's `x` and `y`; only non-negative integers are accepted.
+When a monitor shares no edge segment or corner with another, a line under the canvas reads "Gap: <model> is not touching another monitor" in the urgent colour. Apply stays enabled, since Hyprland accepts gaps. When any two rectangles overlap, the same line reads "Overlap: monitors must not overlap" instead, and Apply is disabled; dragging and nudging cannot cause an overlap, but a mode or scale change can. Below the canvas, two number fields edit the selected monitor's `x` and `y`; only non-negative integers are accepted.
 
-Under the X and Y fields the selected monitor has two rows of controls. Everything writes into the same `monitors` list as position, so Apply builds the profile unchanged; nothing reaches Hyprland before Apply.
+Under the X and Y fields the selected monitor has two rows of controls, plus an Advanced section behind a toggle button at the left of the action row (closed on open, so the card keeps its size). Everything writes into the same `monitors` list as position, so Apply builds the profile unchanged; nothing reaches Hyprland before Apply.
 
 - **Enabled** toggles `disabled`. A disabled monitor is drawn at 0.4 opacity and its other controls are dimmed and inactive; Apply sends it as `enabled: false` only.
 - **Mode** is a dropdown of `Preferred`, `Highest resolution`, `Highest refresh rate`, then every real mode from `availableModes` as `1920 x 1080  75 Hz`, deduplicated by the profile value `WIDTHxHEIGHT@HZ` (refresh rounded) and sorted by width, height and refresh, descending. Choosing a real mode also rewrites `width`, `height` and `refreshRate` so the rectangle resizes; a special leaves them alone and is sent as the mode string. A chosen `modeValue` overrides the size and refresh in the profile.
 - **Scale** is a row of buttons plus a free number field. The buttons are the clean scales from 1 to 2 for the monitor's current mode (at most six, evenly thinned when more qualify); the field takes any value above 0 up to 10 and commits on Enter or when it loses focus. "Logical: W x H" beside it is the mode after the transform swap divided by the scale, rounded.
-- **Transform** is a dropdown of the eight Hyprland values: Normal, 90°, 180°, 270°, Flipped, Flipped 90°, Flipped 180°, Flipped 270°.
+- **Rotation** (Hyprland's `transform`) is a dropdown of the eight Hyprland values: Normal, 90°, 180°, 270°, Flipped, Flipped 90°, Flipped 180°, Flipped 270°.
 
-A scale is clean when `width * 120` and `height * 120` are both divisible by `round(scale * 120)`, the rule `omarchy-hyprland-monitor-scaling` applies. An unclean scale on any enabled monitor shows "1.4 does not divide 1920x1080 cleanly (Hyprland would warn)" in the urgent colour under the controls (the selected monitor's, else the first offender's) and disables Apply. Apply is also disabled when every monitor is disabled. Arrow-key nudging only runs while no control has focus; Tab walks the controls and Escape still closes the panel.
+The **Advanced** section is two rows, enabled only for an enabled monitor:
+
+- **Mirror** is a dropdown of `None` and every other enabled monitor as `Model (connector)`, leaving out any monitor that already mirrors this one. Choosing one sets the monitor's `mirror` to that identity. While a monitor mirrors an enabled monitor, its X and Y fields are dimmed and inactive.
+- **VRR** is `Off`, `On`, `Fullscreen only`, `Fullscreen with video or game`, the values 0 to 3 of Hyprland's `misc:vrr`.
+- **Bit depth** is `8 bit` or `10 bit`. Choosing 10 bit shows "10 bit: some apps cannot screen-capture, and border colours stay 8 bit", from the Hyprland wiki's warning.
+- **Colour** is the `cm` presets: `auto`, `srgb`, `dcip3`, `dp3`, `adobe`, `wide`, `edid`, `hdr` and `hdredid`, the last two labelled "(experimental)" as the wiki does.
+- **SDR brightness** (1 to 2) and **SDR saturation** (0 to 2) are text fields that commit on Enter or when they lose focus. A value outside its range or not a number is dropped and the field shows the stored value again. The wiki names 1.0 to 2.0 as the typical brightness range and gives no range for saturation; both ranges here are this panel's choice.
+
+### Monitor fields
+
+`Model.toProfile` writes the fields below only when the monitor object carries them. A key the user edited wins over the key `state` reports.
+
+| Profile field | From the user's edit | Else from `state` |
+|---|---|---|
+| `mirror` | `mirror` (an identity) | none; `state`'s `mirrorOf` is a connector name, so it is not read back |
+| `vrr` | `vrrMode` (0 to 3) | `vrr` boolean: `false` is 0, `true` is 1 |
+| `bitdepth` | `bitdepth` (8 or 10) | none; Hyprland does not report it |
+| `cm` | `cm` | `colorManagementPreset` |
+| `sdrbrightness` | `sdrBrightness` | `sdrBrightness` |
+| `sdrsaturation` | `sdrSaturation` | `sdrSaturation` |
+
+`mirror` is dropped when its target is disabled or not in the list. A disabled monitor is sent as `enabled: false` only. The `state` `vrr` boolean is the active state, so a monitor configured with mode 2 that reads `false` is written back as 0 on the next Apply unless the user picks a mode.
+
+Checked live on this machine: `mirror` with a `desc:` identity and `enabled: false` both apply through `hyprctl eval`, drop the monitor from `hyprctl -j monitors` (the default list), move its windows to a remaining monitor, and come back on `hyprctl reload` with their windows.
+
+A scale is clean when `width * 120` and `height * 120` are both divisible by `round(scale * 120)`, the rule `omarchy-hyprland-monitor-scaling` applies. An unclean scale on any enabled monitor shows "1.4 does not divide 1920x1080 cleanly (Hyprland would warn)" in the urgent colour under the controls (the selected monitor's, else the first offender's) and disables Apply. Apply is also disabled when every monitor is disabled or any two overlap. Arrow-key nudging only runs while no control has focus; Tab walks the controls and Escape still closes the panel.
 
 Actions:
 

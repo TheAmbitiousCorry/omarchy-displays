@@ -30,7 +30,26 @@ function fitScale(rects, canvasW, canvasH, padding) {
   return Math.min(1, availW / b.width, availH / b.height)
 }
 
+function round3(n) {
+  return Math.round(Number(n) * 1000) / 1000
+}
+
+// A user edit lives under its own key; the key state reports is the fallback.
+function advancedFields(m, enabledIdentities) {
+  var out = {}
+  if (typeof m.mirror === "string" && m.mirror !== "" && enabledIdentities.indexOf(m.mirror) >= 0) out.mirror = m.mirror
+  if (m.vrrMode !== undefined && m.vrrMode !== null) out.vrr = m.vrrMode
+  else if (typeof m.vrr === "boolean") out.vrr = m.vrr ? 1 : 0
+  if (m.bitdepth !== undefined && m.bitdepth !== null) out.bitdepth = m.bitdepth
+  var cm = m.cm || m.colorManagementPreset
+  if (cm) out.cm = cm
+  if (m.sdrBrightness !== undefined && m.sdrBrightness !== null) out.sdrbrightness = round3(m.sdrBrightness)
+  if (m.sdrSaturation !== undefined && m.sdrSaturation !== null) out.sdrsaturation = round3(m.sdrSaturation)
+  return out
+}
+
 function toProfile(monitors, name) {
+  var enabledIdentities = monitors.filter(function (m) { return !m.disabled }).map(function (m) { return m.identity })
   return {
     schemaVersion: 1,
     name: name,
@@ -43,8 +62,10 @@ function toProfile(monitors, name) {
       entry.enabled = true
       entry.mode = m.modeValue || currentModeValue(m)
       entry.position = m.x + "x" + m.y
-      entry.scale = Math.round(Number(m.scale) * 1000) / 1000
+      entry.scale = round3(m.scale)
       entry.transform = m.transform || 0
+      var extra = advancedFields(m, enabledIdentities)
+      Object.keys(extra).forEach(function (k) { entry[k] = extra[k] })
       return entry
     })
   }
@@ -123,6 +144,54 @@ function transformOptions() {
   return TRANSFORM_LABELS.map(function (label, i) { return { label: label, value: i } })
 }
 
+function vrrOptions() {
+  return [
+    { label: "Off", value: 0 },
+    { label: "On", value: 1 },
+    { label: "Fullscreen only", value: 2 },
+    { label: "Fullscreen with video or game", value: 3 },
+  ]
+}
+
+function bitdepthOptions() {
+  return [{ label: "8 bit", value: 8 }, { label: "10 bit", value: 10 }]
+}
+
+function cmOptions() {
+  return [
+    { label: "Auto", value: "auto" },
+    { label: "sRGB", value: "srgb" },
+    { label: "DCI P3", value: "dcip3" },
+    { label: "Apple P3", value: "dp3" },
+    { label: "Adobe RGB", value: "adobe" },
+    { label: "Wide gamut (BT2020)", value: "wide" },
+    { label: "EDID primaries", value: "edid" },
+    { label: "HDR (experimental)", value: "hdr" },
+    { label: "HDR with EDID primaries (experimental)", value: "hdredid" },
+  ]
+}
+
+// Dropdown values are strings, so the None option round-trips as "null".
+function mirrorOptions(monitors, index) {
+  var self = monitors[index]
+  var out = [{ label: "None", value: null }]
+  monitors.forEach(function (m, i) {
+    if (i === index || m.disabled || m.mirror === self.identity) return
+    out.push({ label: shortName(m) + " (" + m.name + ")", value: m.identity })
+  })
+  return out
+}
+
+function mirrorPatch(value) {
+  return { mirror: value === "null" ? null : value }
+}
+
+function parseRanged(text, min, max) {
+  if (String(text).trim() === "") return null
+  var v = Number(text)
+  return v >= min && v <= max ? v : null
+}
+
 function shortName(monitor) {
   var model = monitor.model
   return model && model !== "" ? model : monitor.name
@@ -197,6 +266,12 @@ function resolveOverlap(moving, others) {
     y = Math.max(0, pick.y)
   }
   return { x: x, y: y }
+}
+
+function hasOverlap(rects) {
+  return rects.some(function (r, i) {
+    return rects.some(function (o, j) { return j > i && overlaps(r, o) })
+  })
 }
 
 function touches(a, b) {

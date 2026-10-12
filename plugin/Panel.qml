@@ -29,6 +29,7 @@ Item {
   property int remaining: 0
   property string lastAction: ""
   property int dragIndex: -1
+  property bool advancedOpen: false
 
   readonly property int snapPixels: 16
   readonly property int nudgeStep: 10
@@ -44,11 +45,17 @@ Item {
     return "Gap: " + names.join(", ") + (names.length === 1 ? " is" : " are") + " not touching another monitor"
   }
 
+  readonly property bool overlapping: Model.hasOverlap(rects)
+  readonly property string layoutWarning: overlapping ? "Overlap: monitors must not overlap" : gapText
+
   readonly property var uncleanMonitors: monitors.filter(function(m) {
     return !m.disabled && !Model.scaleIsClean(m.width, m.height, m.scale)
   })
   readonly property bool anyEnabled: monitors.some(function(m) { return !m.disabled })
   readonly property bool selectedEditable: selected !== null && !selected.disabled
+  readonly property bool selectedMirrors: selected !== null && !selected.disabled && monitors.some(function(m) {
+    return !m.disabled && m.identity === selected.mirror
+  })
   readonly property var scaleWarning: {
     var m = selected && uncleanMonitors.indexOf(selected) >= 0 ? selected : (uncleanMonitors[0] || null)
     if (m === null) return ""
@@ -97,6 +104,14 @@ Item {
     var patch = {}
     patch[axis] = value
     updateMonitor(index, patch)
+  }
+
+  function commitSdr(key, text, min, max) {
+    var v = Model.parseRanged(text, min, max)
+    if (v === null) return
+    var patch = {}
+    patch[key] = v
+    updateMonitor(selectedIndex, patch)
   }
 
   function commitScale(text) {
@@ -401,7 +416,7 @@ Item {
             textFormat: Text.PlainText
             Layout.fillWidth: true
             Layout.preferredHeight: gapMetrics.height
-            text: root.gapText
+            text: root.layoutWarning
             color: Color.urgent
             font.family: Style.font.family
             font.pixelSize: Style.font.bodySmall
@@ -422,6 +437,8 @@ Item {
             NumberField {
               id: xField
               label: "X"
+              enabled: !root.selectedMirrors
+              opacity: enabled ? 1 : 0.5
               foreground: Color.popups.text
               from: 0
               to: 32000
@@ -431,6 +448,8 @@ Item {
             NumberField {
               id: yField
               label: "Y"
+              enabled: !root.selectedMirrors
+              opacity: enabled ? 1 : 0.5
               foreground: Color.popups.text
               from: 0
               to: 32000
@@ -464,7 +483,7 @@ Item {
             }
             Dropdown {
               id: transformDropdown
-              label: "Transform"
+              label: "Rotation"
               Layout.preferredWidth: Style.space(170)
               enabled: root.selectedEditable
               opacity: enabled ? 1 : 0.5
@@ -534,9 +553,134 @@ Item {
           }
 
           RowLayout {
+            visible: root.advancedOpen
+            Layout.fillWidth: true
+            spacing: Style.spacing.panelGap
+            enabled: root.selectedEditable
+            opacity: enabled ? 1 : 0.5
+
+            Dropdown {
+              id: mirrorDropdown
+              label: "Mirror"
+              Layout.fillWidth: true
+              options: root.selected ? Model.mirrorOptions(root.monitors, root.selectedIndex) : []
+              Binding { target: mirrorDropdown; property: "value"; value: root.selected && root.selected.mirror ? root.selected.mirror : "null" }
+              onChanged: function(v) { root.updateMonitor(root.selectedIndex, Model.mirrorPatch(v)) }
+            }
+            Dropdown {
+              id: vrrDropdown
+              label: "VRR"
+              Layout.fillWidth: true
+              options: Model.vrrOptions()
+              Binding {
+                target: vrrDropdown
+                property: "value"
+                value: !root.selected ? "0" : String(root.selected.vrrMode !== undefined ? root.selected.vrrMode : (root.selected.vrr ? 1 : 0))
+              }
+              onChanged: function(v) { root.updateMonitor(root.selectedIndex, { vrrMode: Number(v) }) }
+            }
+            Dropdown {
+              id: bitdepthDropdown
+              label: "Bit depth"
+              Layout.fillWidth: true
+              options: Model.bitdepthOptions()
+              Binding { target: bitdepthDropdown; property: "value"; value: root.selected ? String(root.selected.bitdepth || 8) : "8" }
+              onChanged: function(v) { root.updateMonitor(root.selectedIndex, { bitdepth: Number(v) }) }
+            }
+            Dropdown {
+              id: cmDropdown
+              label: "Colour"
+              Layout.fillWidth: true
+              options: Model.cmOptions()
+              Binding { target: cmDropdown; property: "value"; value: root.selected ? (root.selected.cm || root.selected.colorManagementPreset || "srgb") : "srgb" }
+              onChanged: function(v) { root.updateMonitor(root.selectedIndex, { cm: v }) }
+            }
+          }
+
+          RowLayout {
+            visible: root.advancedOpen
+            Layout.fillWidth: true
+            spacing: Style.spacing.panelGap
+            enabled: root.selectedEditable
+            opacity: enabled ? 1 : 0.5
+
+            Text {
+              textFormat: Text.PlainText
+              text: "SDR brightness"
+              color: Qt.darker(Color.popups.text, 1.4)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+              font.bold: true
+            }
+            TextField {
+              id: brightnessField
+              foreground: Color.popups.text
+              Layout.preferredWidth: Style.space(84)
+              horizontalAlignment: Text.AlignHCenter
+              inputMethodHints: Qt.ImhFormattedNumbersOnly
+              onEditingFinished: {
+                root.commitSdr("sdrBrightness", text, 1, 2)
+                text = root.selected ? String(Math.round(root.selected.sdrBrightness * 1000) / 1000) : ""
+              }
+              Binding {
+                target: brightnessField
+                property: "text"
+                value: root.selected ? String(Math.round(root.selected.sdrBrightness * 1000) / 1000) : ""
+                when: !brightnessField.activeFocus
+                restoreMode: Binding.RestoreNone
+              }
+            }
+            Text {
+              textFormat: Text.PlainText
+              text: "SDR saturation"
+              color: Qt.darker(Color.popups.text, 1.4)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+              font.bold: true
+            }
+            TextField {
+              id: saturationField
+              foreground: Color.popups.text
+              Layout.preferredWidth: Style.space(84)
+              horizontalAlignment: Text.AlignHCenter
+              inputMethodHints: Qt.ImhFormattedNumbersOnly
+              onEditingFinished: {
+                root.commitSdr("sdrSaturation", text, 0, 2)
+                text = root.selected ? String(Math.round(root.selected.sdrSaturation * 1000) / 1000) : ""
+              }
+              Binding {
+                target: saturationField
+                property: "text"
+                value: root.selected ? String(Math.round(root.selected.sdrSaturation * 1000) / 1000) : ""
+                when: !saturationField.activeFocus
+                restoreMode: Binding.RestoreNone
+              }
+            }
+            Text {
+              textFormat: Text.PlainText
+              visible: !!root.selected && root.selected.bitdepth === 10
+              text: "10 bit: some apps cannot screen-capture, and border colours stay 8 bit"
+              color: Color.urgent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+              elide: Text.ElideRight
+              Layout.fillWidth: true
+            }
+            Item { Layout.fillWidth: true; visible: !(!!root.selected && root.selected.bitdepth === 10) }
+          }
+
+          RowLayout {
             Layout.fillWidth: true
             spacing: Style.spacing.controlGap
 
+            Button {
+              text: "Advanced"
+              bordered: true
+              focusable: true
+              selected: root.advancedOpen
+              foreground: Color.popups.text
+              onClicked: root.advancedOpen = !root.advancedOpen
+            }
             Item { Layout.fillWidth: true }
             Button {
               text: "Identify"
@@ -557,7 +701,7 @@ Item {
               bordered: true
               focusable: true
               selected: true
-              enabled: !root.busy && !root.counting && root.anyEnabled && root.uncleanMonitors.length === 0
+              enabled: !root.busy && !root.counting && root.anyEnabled && root.uncleanMonitors.length === 0 && !root.overlapping
               opacity: enabled ? 1 : 0.5
               foreground: Color.popups.text
               onClicked: root.apply()

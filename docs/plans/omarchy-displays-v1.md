@@ -76,12 +76,26 @@ sampled claims confirmed) is summarised in the Research section at the end.
 
 Resolve these in the step that first needs them; none blocks step 1.
 
-1. Per-monitor `vrr` integer meanings (0 off, 1 on, 2 fullscreen only, 3
-   content-typed, per the Variables page). Step 5b confirms against the wiki
-   and a live eval.
-2. Whether `hl.monitor` eval with `mirror` or `disabled = true` behaves like
-   the config-time rule, including window migration. Step 5b tests both on
-   this machine.
+1. Resolved in step 5b. Per-monitor `vrr` takes the `misc:vrr` modes, quoted
+   from the Variables page: "0 - off, 1 - on, 2 - fullscreen only, 3 -
+   fullscreen with video or game content type". The Monitors page says the
+   `vrr` field's "value is the mode from the variables page". `hyprctl -j
+   monitors` reports `vrr` only as a boolean (the active state), so a
+   configured mode 2 or 3 reads back as `false` outside fullscreen. The panel
+   therefore treats the boolean as a fallback and a mode the user picked
+   (`vrrMode`) as authoritative.
+2. Resolved in step 5b. Live test on this machine, `apply` with a 6 second
+   timeout, Dell on DP-2. Mirror (`mirror` set to the ASUS identity, accepted
+   as `desc:` identity, `apply` answered `ok`): 2 seconds in, DP-2 is absent
+   from `hyprctl -j monitors` (a mirroring monitor is hidden from the default
+   list), the Telegram window on workspace 6 moved to the ASUS monitor, and
+   workspace 6 kept its name. After the countdown: DP-2 back, `mirrorOf`
+   `none`, `disabled` false, three monitors, Telegram back on the Dell. Disabled
+   (`enabled: false`): identical observation, DP-2 absent, window on the ASUS,
+   all restored by the countdown's `hyprctl reload`. Eval therefore behaves like
+   the config-time rule, windows migrate off the removed output and return on
+   reload; nothing was lost. Not checked: that the mirrored pixels are visibly
+   the same image.
 3. Whether a `panel` plugin window can be sized to a layout canvas (around
    900x600 logical) and accept drag with `MouseArea`. Step 2 proves the
    window, step 4 the drag.
@@ -198,7 +212,7 @@ script), effective logical size beside it, transform with 8 values.
 Delivers mirror-of, VRR (unknown 1), bit depth 8 or 10, colour preset, SDR
 brightness and saturation. Mirror and disabled tested live (unknown 2).
 
-- [ ] Verification: mirroring the Dell onto the ASUS shows the same image on
+- [x] Verification: mirroring the Dell onto the ASUS shows the same image on
       both; disabling the Dell moves its windows to the ASUS; both revert
       without Keep. VRR and bit depth values round-trip through
       `displays.lua` and `hyprctl -j monitors` where the JSON exposes them.
@@ -290,6 +304,10 @@ the omarchy-sysmon style per `writing:technical-writing`. Unknown 7 settled.
   backs up `hyprland.lua` only on a run that changes it; `install-dev.sh` is
   replaced by `install.sh`.
 
+- 2026-10-12, step 5b: two workers drove the screen at once and one's
+  keystrokes landed in the coordinator's terminal. Rule from here: one
+  screen-driving worker at a time. User asked for the Transform label to
+  read Rotation; the profile field stays `transform`.
 - 2026-10-12, user scope change: a Configure button in the stock Display
   bar widget and a launcher entry, added as step 8b; the non-goal on the
   stock widget narrowed to "no rewrite".
