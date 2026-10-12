@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # omarchy:summary=Show, apply, confirm, and revert Hyprland monitor layouts
-# omarchy:args=state | apply PROFILE.json [--timeout N] | confirm | revert | help
-# omarchy:examples=omarchy displays state | omarchy displays apply desk.json | omarchy displays apply desk.json --timeout 30 | omarchy displays confirm | omarchy displays revert
+# omarchy:args=state | apply PROFILE.json [--timeout N] | confirm | revert | status | help
+# omarchy:examples=omarchy displays state | omarchy displays apply desk.json | omarchy displays apply desk.json --timeout 30 | omarchy displays confirm | omarchy displays revert | omarchy displays status
 
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 LOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/omarchy-displays/countdown"
@@ -22,6 +22,7 @@ Usage: omarchy-displays <command>
   apply PROFILE.json [--timeout N]  apply live, then revert after N seconds (default 15) unless confirmed
   confirm                         keep the applied layout
   revert                          reload the Hyprland config, undoing any unconfirmed change
+  status                          the live countdown as JSON: pid, deadline, seconds remaining
   help                            this text
 EOF
 }
@@ -56,7 +57,8 @@ cmd_state() {
 }
 
 # Prints one problem per line; no output means the profile is safe to write
-# into Lua. Every string and number that reaches Lua is checked here.
+# into Lua. Every string and number that reaches Lua is checked here. mode,
+# position and scale are required only on an enabled monitor.
 VALIDATE='
   def str_ok: type == "string" and test($str_re) and (contains("\n") | not);
   def num_ok: type == "number" and (tojson | test($num_re));
@@ -70,13 +72,17 @@ VALIDATE='
      | .key as $i | .value as $m
      | if ($m | type) != "object" then "monitors[\($i)] must be an object"
        else
-         (["identity", "mode", "position"][] as $k
-          | if ($m | has($k)) and ($m[$k] | str_ok) then empty
-            else "monitors[\($i)].\($k) must be a string of [A-Za-z0-9 ._:@/+-]" end),
+         (if ($m | has("identity")) and ($m.identity | str_ok) then empty
+          else "monitors[\($i)].identity must be a string of [A-Za-z0-9 ._:@/+-]" end),
          (if ($m.enabled | type) == "boolean" then empty
           else "monitors[\($i)].enabled must be true or false" end),
-         (if ($m | has("scale")) and ($m.scale | num_ok) then empty
-          else "monitors[\($i)].scale must be a plain number" end),
+         (["mode", "position"][] as $k
+          | if ($m | has($k)) then (if ($m[$k] | str_ok) then empty else "bad" end)
+            elif $m.enabled == true then "bad" else empty end
+          | "monitors[\($i)].\($k) must be a string of [A-Za-z0-9 ._:@/+-]"),
+         (if ($m | has("scale")) then (if ($m.scale | num_ok) then empty else "bad" end)
+          elif $m.enabled == true then "bad" else empty end
+          | "monitors[\($i)].scale must be a plain number"),
          (["mirror", "cm"][] as $k
           | if $m[$k] != null and (($m[$k] | str_ok) | not)
             then "monitors[\($i)].\($k) must be null or a string of [A-Za-z0-9 ._:@/+-]" else empty end),
@@ -167,9 +173,22 @@ cmd_apply() {
 
   # setsid gives the countdown its own session, so it outlives whatever
   # launched apply (a shell panel, a terminal) and still reverts on time.
+  echo $(($(date +%s) + timeout)) >"$LOCK/deadline"
   setsid bash "$SELF" _countdown "$LOCK" "$timeout" </dev/null >/dev/null 2>&1 &
   echo $! >"$LOCK/pid"
   echo "applied ${#rules[@]} monitors; countdown ${timeout}s (pid $!)"
+}
+
+cmd_status() {
+  local pid deadline now
+  if pid=$(live_countdown_pid) && [[ -f $LOCK/deadline ]] && deadline=$(<"$LOCK/deadline") &&
+    [[ $deadline =~ ^[0-9]+$ ]]; then
+    now=$(date +%s)
+    jq -n --argjson pid "$pid" --argjson deadline "$deadline" --argjson now "$now" \
+      '{countdown: {pid: $pid, deadline: $deadline, remaining: ([0, $deadline - $now] | max)}}'
+  else
+    jq -n '{countdown: null}'
+  fi
 }
 
 cmd_countdown() {
@@ -213,6 +232,7 @@ case "${1:-}" in
   apply) shift; cmd_apply "$@" ;;
   confirm) cmd_confirm ;;
   revert) cmd_revert ;;
+  status) cmd_status ;;
   _countdown) shift; cmd_countdown "$@" ;;
   help | -h | --help | "") usage ;;
   *)

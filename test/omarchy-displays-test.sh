@@ -177,5 +177,30 @@ eq "disabled monitor: eval carries disabled and no mode" \
   "$(log | sed -n 2p)" 'eval hl.monitor({ output = "desc:Dell Inc. DELL SE2726H HG5QZB4", disabled = true })'
 run revert
 
+reset
+run apply "$(profile offmin '{"schemaVersion":1,"name":"x","monitors":[{"identity":"desc:Dell Inc. DELL SE2726H HG5QZB4","enabled":false}]}')"
+eq "disabled monitor with only identity: accepted" "$rc" 0
+eq "disabled monitor with only identity: eval carries disabled" \
+  "$(log)" 'eval hl.monitor({ output = "desc:Dell Inc. DELL SE2726H HG5QZB4", disabled = true })'
+run revert
+refuse "disabled monitor with a bad mode" "$(profile offbad "$(jq '.monitors[1].enabled = false | .monitors[1].mode = "x;y"' <<<"$desk")")"
+refuse "enabled monitor missing scale" "$(profile noscale "$(jq 'del(.monitors[0].scale)' <<<"$desk")")"
+refuse "enabled monitor missing mode" "$(profile nomode "$(jq 'del(.monitors[0].mode)' <<<"$desk")")"
+
+reset
+run status
+eq "status with no lock: exit 0" "$rc" 0
+eq "status with no lock: null countdown" "$(jq -c . <<<"$out")" '{"countdown":null}'
+
+run apply "$root/desk.json" --timeout 5
+run status
+rem=$(jq '.countdown.remaining' <<<"$out")
+eq "status during countdown: remaining within 3..5" "$((rem >= 3 && rem <= 5))" 1
+eq "status during countdown: pid is the lock's pid" "$(jq '.countdown.pid' <<<"$out")" "$(<"$lock/pid")"
+eq "status during countdown: deadline matches lock file" "$(jq '.countdown.deadline' <<<"$out")" "$(<"$lock/deadline")"
+run confirm
+run status
+eq "status after confirm: null countdown" "$(jq -c . <<<"$out")" '{"countdown":null}'
+
 printf '\n%d passed, %d failed\n' "$passes" "$fails"
 exit $((fails > 0))

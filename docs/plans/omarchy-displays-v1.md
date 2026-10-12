@@ -117,7 +117,7 @@ the lock, detaches a 15 second countdown that runs `hyprctl reload` unless
 with the profile schema and `docs/context/core/conventions.md` with the three
 conventions named above.
 
-- [ ] Verification: a profile setting the Samsung to 60Hz, applied with
+- [x] Verification: a profile setting the Samsung to 60Hz, applied with
       `apply`: `hyprctl -j monitors` shows 60.0 within 2 seconds; with no
       `confirm`, 15 seconds later it shows 74.97. Again with `confirm`: it
       stays at 60.0 (until the manual restore to 75). A second `apply` during
@@ -138,7 +138,7 @@ Identify button flashes a numbered badge on each physical screen for 3
 seconds, reusing the shell's OSD overlay surface if it accepts a payload,
 else a minimal `overlay` entry point.
 
-- [ ] Verification: `omarchy-shell shell summon kr34t1v.displays` opens a
+- [x] Verification: `omarchy-shell shell summon kr34t1v.displays` opens a
       panel showing three rectangles matching the ASCII diagram in
       `~/.config/hypr/monitors.lua`. Changing the Dell's y to 0 and applying
       moves it live; letting the countdown lapse puts it back. Theme switch
@@ -260,6 +260,13 @@ the omarchy-sysmon style per `writing:technical-writing`. Unknown 7 settled.
 - Spec domain: docs, install.
 
 ## Deviation log
+
+- 2026-10-12, step 2: the shell does not see QML edits made through the
+  plugin symlink, so a changed Panel.qml needs `omarchy restart shell`;
+  install-dev.sh says so. Roast moved the countdown clock into the CLI
+  (`status`) so the panel can reopen mid-countdown, dropped the fake
+  mode/position/scale the validator forced onto disabled monitors, and
+  removed an unused Model.js export.
 
 - 2026-10-12, before step 1, roast-plan pass: moved the require line and
   include-chain check from the last step to step 3 (every "survives reload"
