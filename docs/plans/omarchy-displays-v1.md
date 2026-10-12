@@ -238,7 +238,7 @@ Delivers a per-monitor workspace list with drag between monitors and a
 "default" marker, written as `hl.workspace_rule` into `displays.lua`
 (unknown 6 settled here). Existing rules read from `hyprctl -j workspacerules`.
 
-- [ ] Verification: moving workspace 6 from the Dell to the Samsung and
+- [x] Verification: moving workspace 6 from the Dell to the Samsung and
       keeping it makes `hyprctl -j workspacerules` show the Samsung identity
       for workspace 6 and `Super+6` opens it there. The paired keybinds in
       `workspaces.lua` still work for 1 through 5.
@@ -314,6 +314,11 @@ the omarchy-sysmon style per `writing:technical-writing`. Unknown 7 settled.
   backs up `hyprland.lua` only on a run that changes it; `install-dev.sh` is
   replaced by `install.sh`.
 
+- 2026-10-12, step 7: a Hyprland workspace rule only decides where a
+  workspace is created; an existing one stays put. apply and persist now
+  move existing workspaces to match the profile, and lapse and revert move
+  them back from a snapshot taken before the evals. Unknown 6 resolved:
+  the panel reads rules from hyprctl and leaves the user's keybinds alone.
 - 2026-10-12, step 5b: two workers drove the screen at once and one's
   keystrokes landed in the coordinator's terminal. Rule from here: one
   screen-driving worker at a time. User asked for the Transform label to
