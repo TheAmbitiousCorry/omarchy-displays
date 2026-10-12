@@ -4,7 +4,7 @@
      list.push("textsize")
      list.push("scale")
      if (displays.length > 1) list.push("monitors")
-+    if (displays.length > 1) list.push("configure")
++    list.push("configure")
      return list
    }
  
@@ -37,19 +37,19 @@
    function clampCursor() {
      var sections = visibleSections
      if (!sections || !sections.length) return
-@@ -819,6 +829,15 @@
-                 rowIndex: index
-               }
+@@ -821,6 +831,15 @@
              }
-+
-+            Button {
-+              text: "Configure"
-+              bordered: true
-+              foreground: root.bar.foreground
-+              fontFamily: root.bar.fontFamily
-+              hasCursor: root.cursorActive && root.focusSection === "configure"
-+              onClicked: root.openDisplays()
-+            }
            }
  
++          Button {
++            text: "Configure"
++            bordered: true
++            foreground: root.bar.foreground
++            fontFamily: root.bar.fontFamily
++            hasCursor: root.cursorActive && root.focusSection === "configure"
++            onClicked: root.openDisplays()
++          }
++
            Item {
+             width: parent.width
+             height: Style.space(4)
