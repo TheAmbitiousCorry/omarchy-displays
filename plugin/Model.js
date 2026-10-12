@@ -309,7 +309,7 @@ function snap(moving, others, threshold) {
 }
 
 function resolveOverlap(moving, others) {
-  var x = Math.max(0, moving.x), y = Math.max(0, moving.y)
+  var x = moving.x, y = moving.y
   for (var pass = 0; pass < 8; pass++) {
     var cur = { x: x, y: y, width: moving.width, height: moving.height }
     var hit = null
@@ -323,11 +323,9 @@ function resolveOverlap(moving, others) {
       { pen: cur.y + cur.height - hit.y, x: x, y: hit.y - cur.height },
       { pen: hit.y + hit.height - cur.y, x: x, y: hit.y + hit.height },
     ]
-    var inBounds = options.filter(function (o) { return o.x >= 0 && o.y >= 0 })
-    var pool = inBounds.length > 0 ? inBounds : options
-    var pick = pool.reduce(function (a, b) { return b.pen < a.pen ? b : a })
-    x = Math.max(0, pick.x)
-    y = Math.max(0, pick.y)
+    var pick = options.reduce(function (a, b) { return b.pen < a.pen ? b : a })
+    x = pick.x
+    y = pick.y
   }
   return { x: x, y: y }
 }
@@ -364,6 +362,29 @@ function applyDrag(index, rects, dx, dy, threshold) {
   var snapped = snap(moved, others, threshold)
   var placed = resolveOverlap({ x: snapped.x, y: snapped.y, width: r.width, height: r.height }, others)
   return { x: Math.round(placed.x), y: Math.round(placed.y) }
+}
+
+// Hyprland positions are absolute, so a layout whose top-left corner is not at
+// the origin would pin the leftmost monitor: it could never move further left.
+// Dragging therefore works in unbounded space and the whole layout is shifted
+// back so its leftmost edge is x 0 and its topmost edge is y 0.
+function normalize(positions) {
+  if (positions.length === 0) return []
+  var minX = Infinity, minY = Infinity
+  positions.forEach(function (p) {
+    minX = Math.min(minX, p.x)
+    minY = Math.min(minY, p.y)
+  })
+  return positions.map(function (p) { return { x: p.x - minX, y: p.y - minY } })
+}
+
+// One position per rect after dragging rects[index] by (dx, dy): the dragged
+// rect through applyDrag, the others unmoved, then the layout normalized.
+function dragLayout(index, rects, dx, dy, threshold) {
+  var moved = applyDrag(index, rects, dx, dy, threshold)
+  return normalize(rects.map(function (r, i) {
+    return i === index ? moved : { x: r.x, y: r.y }
+  }))
 }
 
 var NAME_RE = /^[A-Za-z0-9]([A-Za-z0-9 _-]{0,38}[A-Za-z0-9_-])?$/

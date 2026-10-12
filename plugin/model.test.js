@@ -64,6 +64,7 @@ test("shortName is the model only", () => {
 })
 
 const R = (x, y, width = 100, height = 100) => ({ x, y, width, height })
+const plain = (positions) => Array.from(positions, (p) => ({ x: p.x, y: p.y }))
 
 test("snap pulls the left edge onto a neighbour's right edge within threshold", () => {
     assert.deepStrictEqual({ ...Model.snap(R(108, 0), [R(0, 0)], 10) }, { x: 100, y: 0 })
@@ -99,15 +100,19 @@ test("resolveOverlap pushes a 4-pixel overlap out to edge contact", () => {
   assert.deepStrictEqual({ ...Model.resolveOverlap(R(0, 96), [R(0, 0)]) }, { x: 0, y: 100 })
 })
 
-test("resolveOverlap leaves a non-overlapping rect and clamps negatives to 0", () => {
+test("resolveOverlap leaves a non-overlapping rect alone, negatives included", () => {
   assert.deepStrictEqual({ ...Model.resolveOverlap(R(100, 0), [R(0, 0)]) }, { x: 100, y: 0 })
-  assert.deepStrictEqual({ ...Model.resolveOverlap(R(-5, -7), []) }, { x: 0, y: 0 })
+  assert.deepStrictEqual({ ...Model.resolveOverlap(R(-5, -7), []) }, { x: -5, y: -7 })
 })
 
-test("resolveOverlap never leaves a rect overlapping when a free side exists at x >= 0", () => {
+test("resolveOverlap pushes left of the origin when that is the shortest way out", () => {
+  assert.deepStrictEqual({ ...Model.resolveOverlap(R(-96, 0), [R(0, 0)]) }, { x: -100, y: 0 })
+})
+
+test("resolveOverlap never leaves a rect overlapping two neighbours", () => {
   const others = [R(0, 0), R(100, 0)]
   const p = Model.resolveOverlap(R(50, 50), others)
-  assert.ok(p.x >= 0 && p.y >= 0)
+  assert.deepStrictEqual({ ...p }, { x: 100, y: 100 })
   assert.ok(others.every((o) => !Model.overlaps({ ...R(p.x, p.y) }, o)))
 })
 
@@ -136,11 +141,45 @@ test("a rotated monitor is placed with swapped dimensions through logicalRect", 
   assert.deepStrictEqual([...Model.gaps([rects[0], { ...rects[1], x: placed.x }])], [])
 })
 
-test("applyDrag never returns negative coordinates", () => {
+test("applyDrag lets a monitor cross the origin", () => {
   const rects = [R(0, 0), R(100, 0)]
   const p = Model.applyDrag(1, rects, -900, -900, 16)
-  assert.ok(p.x >= 0 && p.y >= 0)
+  assert.deepStrictEqual({ ...p }, { x: -800, y: -900 })
   assert.ok(!Model.overlaps(R(p.x, p.y), rects[0]))
+})
+
+test("normalize moves the layout's top-left corner to the origin and keeps relative positions", () => {
+  assert.deepStrictEqual(plain(Model.normalize([])), [])
+  assert.deepStrictEqual(plain(Model.normalize([{ x: -500, y: 20 }, { x: 0, y: -30 }])), [{ x: 0, y: 50 }, { x: 500, y: 0 }])
+  assert.deepStrictEqual(plain(Model.normalize([{ x: 40, y: 10 }, { x: 140, y: 10 }])), [{ x: 0, y: 0 }, { x: 100, y: 0 }])
+})
+
+test("dragLayout moving the leftmost monitor left shifts the others right by the same amount", () => {
+  const rects = [R(0, 0), R(100, 0), R(200, 0)]
+  assert.deepStrictEqual(plain(Model.dragLayout(0, rects, -250, 0, 0)), [{ x: 0, y: 0 }, { x: 350, y: 0 }, { x: 450, y: 0 }])
+})
+
+test("dragLayout is symmetric: left and right moves of the same size give mirror layouts", () => {
+  const rects = [R(0, 0), R(100, 0)]
+  const left = plain(Model.dragLayout(0, rects, -300, 0, 0))
+  const right = plain(Model.dragLayout(1, rects, 300, 0, 0))
+  assert.deepStrictEqual(left, [{ x: 0, y: 0 }, { x: 400, y: 0 }])
+  assert.deepStrictEqual(right, [{ x: 0, y: 0 }, { x: 400, y: 0 }])
+})
+
+test("dragLayout above the top monitor puts the dragged one at y 0 and the rest below", () => {
+  const rects = [R(0, 0), R(0, 100)]
+  assert.deepStrictEqual(plain(Model.dragLayout(1, rects, 0, -350, 0)), [{ x: 0, y: 250 }, { x: 0, y: 0 }])
+})
+
+test("dragLayout snaps and resolves overlap before normalizing", () => {
+  const rects = [R(0, 0), R(300, 0)]
+  assert.deepStrictEqual(plain(Model.dragLayout(1, rects, -395, 0, 10)), [{ x: 100, y: 0 }, { x: 0, y: 0 }])
+})
+
+test("dragLayout leaves an already normalized layout untouched when the move is inward", () => {
+  const rects = [R(0, 0), R(500, 0)]
+  assert.deepStrictEqual(plain(Model.dragLayout(1, rects, -200, 0, 0)), [{ x: 0, y: 0 }, { x: 300, y: 0 }])
 })
 
 test("applyDrag onto an occupied spot lands adjacent, not overlapping", () => {

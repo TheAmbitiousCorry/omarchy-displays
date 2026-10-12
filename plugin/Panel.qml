@@ -294,13 +294,12 @@ Item {
     updateMonitor(selectedIndex, { scale: v })
   }
 
-  // Moves a monitor by (dx, dy) layout pixels from `base` rects, snapped and pushed out of overlaps.
+  // Moves a monitor by (dx, dy) layout pixels from `base` rects, snapped and pushed out of
+  // overlaps; every monitor is rewritten because the layout is shifted back onto the origin.
   function moveMonitor(index, base, dx, dy, threshold) {
-    if (index < 0 || index >= monitors.length) return
-    var p = Model.applyDrag(index, base, dx, dy, threshold)
-    var next = monitors.slice()
-    next[index] = Object.assign({}, next[index], { x: p.x, y: p.y })
-    monitors = next
+    if (index < 0 || index >= monitors.length || base.length !== monitors.length) return
+    var placed = Model.dragLayout(index, base, dx, dy, threshold)
+    monitors = monitors.map(function(m, i) { return Object.assign({}, m, { x: placed[i].x, y: placed[i].y }) })
   }
 
   // A snap radius at or above the step would pull every nudge back to the edge it left.
