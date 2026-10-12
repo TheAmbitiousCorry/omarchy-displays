@@ -48,7 +48,8 @@ function advancedFields(m, enabledIdentities) {
   return out
 }
 
-function toProfile(monitors, name) {
+// `extra` is carried verbatim: stored entries for monitors that are not connected.
+function toProfile(monitors, name, extra) {
   var enabledIdentities = monitors.filter(function (m) { return !m.disabled }).map(function (m) { return m.identity })
   return {
     schemaVersion: 1,
@@ -67,7 +68,7 @@ function toProfile(monitors, name) {
       var extra = advancedFields(m, enabledIdentities)
       Object.keys(extra).forEach(function (k) { entry[k] = extra[k] })
       return entry
-    })
+    }).concat(extra || [])
   }
 }
 
@@ -300,4 +301,78 @@ function applyDrag(index, rects, dx, dy, threshold) {
   var snapped = snap(moved, others, threshold)
   var placed = resolveOverlap({ x: snapped.x, y: snapped.y, width: r.width, height: r.height }, others)
   return { x: Math.round(placed.x), y: Math.round(placed.y) }
+}
+
+var NAME_RE = /^[A-Za-z0-9]([A-Za-z0-9 _-]{0,38}[A-Za-z0-9_-])?$/
+
+// The CLI enforces the same rule; this only spares a round trip. Returns an error message, or "".
+function validateName(name, existing) {
+  if (typeof name !== "string" || !NAME_RE.test(name))
+    return "Use 1 to 40 letters, digits, spaces, _ or -, not starting with a space or ending in one"
+  if (existing && existing.indexOf(name) >= 0) return "A profile named " + name + " already exists"
+  return ""
+}
+
+// The profile's fields win over what state reports; connected monitors the
+// profile lacks keep live state; profile entries with no connected monitor
+// come back in `extra` so a save does not drop them.
+function mergeProfile(profile, stateMonitors) {
+  var entries = {}
+  ;(profile.monitors || []).forEach(function (e) { entries[e.identity] = e })
+  var connected = {}
+  var monitors = stateMonitors.map(function (m) {
+    connected[m.identity] = true
+    var e = entries[m.identity]
+    if (!e) return m
+    if (!e.enabled) return Object.assign({}, m, { disabled: true })
+    var patch = { disabled: false }
+    if (typeof e.mode === "string") Object.assign(patch, modePatch(e.mode))
+    var pos = /^(-?\d+)x(-?\d+)$/.exec(e.position || "")
+    if (pos) { patch.x = Number(pos[1]); patch.y = Number(pos[2]) }
+    if (typeof e.scale === "number") patch.scale = e.scale
+    if (typeof e.transform === "number") patch.transform = e.transform
+    if (e.mirror !== undefined) patch.mirror = e.mirror
+    if (typeof e.vrr === "number") patch.vrrMode = e.vrr
+    if (typeof e.bitdepth === "number") patch.bitdepth = e.bitdepth
+    if (typeof e.cm === "string") patch.cm = e.cm
+    if (typeof e.sdrbrightness === "number") patch.sdrBrightness = e.sdrbrightness
+    if (typeof e.sdrsaturation === "number") patch.sdrSaturation = e.sdrsaturation
+    return Object.assign({}, m, patch)
+  })
+  var extra = (profile.monitors || []).filter(function (e) { return !connected[e.identity] })
+  return { monitors: monitors, extra: extra }
+}
+
+var COMPARED_FIELDS = ["mode", "position", "scale", "vrr", "bitdepth", "cm", "sdrbrightness", "sdrsaturation"]
+var ROUNDED_FIELDS = ["scale", "sdrbrightness", "sdrsaturation"]
+
+// A field the profile does not carry is unspecified, not a difference, except
+// transform and mirror, whose absence means 0 and none. Profile monitors that
+// are not connected cannot differ; a connected monitor the profile lacks does.
+function isDirty(canvasMonitors, profile) {
+  var entries = {}
+  ;(profile.monitors || []).forEach(function (e) { entries[e.identity] = e })
+  return toProfile(canvasMonitors, profile.name).monitors.some(function (c) {
+    var e = entries[c.identity]
+    if (!e) return true
+    if (c.enabled !== !!e.enabled) return true
+    if (!c.enabled) return false
+    if ((c.transform || 0) !== (e.transform || 0)) return true
+    if ((c.mirror || null) !== (e.mirror || null)) return true
+    return COMPARED_FIELDS.some(function (k) {
+      if (e[k] === undefined || e[k] === null) return false
+      if (ROUNDED_FIELDS.indexOf(k) >= 0) return round3(c[k]) !== round3(e[k])
+      return c[k] !== e[k]
+    })
+  })
+}
+
+var UNSAVED = "(unsaved)"
+
+// The dropdown rows: each profile, plus "(unsaved)" while the canvas has no
+// clean profile behind it.
+function profileOptions(names, unsaved) {
+  var out = names.map(function (n) { return { label: n, value: n } })
+  if (unsaved) out.unshift({ label: UNSAVED, value: UNSAVED })
+  return out
 }

@@ -7,7 +7,7 @@ last-verified: 2026-10-12
 
 `bin/omarchy-displays` reads Hyprland's monitor state, applies a profile live, and reverts it unless the change is confirmed in time. It needs only bash, coreutils, `jq` and `hyprctl`, and works from a TTY.
 
-Commands: `state`, `apply <profile.json> [--timeout N]`, `confirm`, `revert`, `status`, `persist [profile.json]`, `doctor`, `loader-line`, `version`, `help`. `version` prints `0.1.0`. The hidden `_countdown` command is the detached countdown process and is not for direct use.
+Commands: `state`, `apply <profile.json> [--timeout N]`, `confirm`, `revert`, `status`, `persist [profile.json]`, `profile list|show|save|delete|activate|match`, `doctor`, `loader-line`, `version`, `help`. `version` prints `0.1.0`. The hidden `_countdown` command is the detached countdown process and is not for direct use.
 
 ## Profile schema
 
@@ -77,7 +77,7 @@ The lock is the directory `$XDG_RUNTIME_DIR/omarchy-displays/countdown` (falling
 | 0 | Success. |
 | 1 | `confirm` with no countdown; a `hyprctl eval` or `reload` that failed; `doctor` found something missing. |
 | 2 | `apply` refused because a countdown is live. |
-| 3 | Invalid input: unreadable or malformed profile, schema violation, a string or number that fails the whitelist, bad `--timeout`, unknown command or option, `persist` with no argument and no `last-applied.json`. No `hyprctl` call is made and nothing is written. |
+| 3 | Invalid input: unreadable or malformed profile, schema violation, a string or number that fails the whitelist, bad `--timeout`, unknown command or option, `persist` with no argument, no `last-applied.json` and no active profile, a profile name that fails the name rule, `profile show`, `delete` or `activate` of a missing profile. No `hyprctl` call is made and nothing is written. |
 
 Validation problems are written to stderr, one per line.
 
@@ -93,7 +93,7 @@ Fields appear in this fixed order: `output`, `disabled`, `mode`, `position`, `sc
 
 ## Persist
 
-`persist [profile.json]` makes a layout survive reloads and restarts. With no argument it reads `last-applied.json`, the profile most recently given to `apply`; with neither, it exits 3. `last-applied.json` lives in the runtime directory, so it is gone after a logout; a later step makes the saved active profile the fallback. It validates the profile exactly as `apply` does, then writes `$OMARCHY_DISPLAYS_HYPR_DIR/displays.lua` (default `~/.config/hypr/displays.lua`) and runs `hyprctl reload`, once. If the reload fails the file stays written and `persist` exits 1.
+`persist [profile.json]` makes a layout survive reloads and restarts. With no argument it reads `last-applied.json`, the profile most recently given to `apply`; if that is absent it reads the active stored profile (see [Profiles](#profiles)); with neither, it exits 3. `last-applied.json` lives in the runtime directory, so it is gone after a logout, and while it exists it outranks the active profile. It validates the profile exactly as `apply` does, then writes `$OMARCHY_DISPLAYS_HYPR_DIR/displays.lua` (default `~/.config/hypr/displays.lua`) and runs `hyprctl reload`, once. If the reload fails the file stays written and `persist` exits 1.
 
 The file has this shape:
 
@@ -102,9 +102,13 @@ The file has this shape:
 -- Profile: desk
 OMARCHY_DISPLAYS_LOADED = "0.1.0"
 hl.monitor({ ... })
+-- from profile desk: monitor not in no-dell
+hl.monitor({ ... })
 ```
 
-One writer: `apply` (through `hyprctl eval`) and `persist` (into the file) take their rule lines from the same jq program, so the eval lines and the file lines are byte-identical for a profile.
+After the chosen profile's rules come the fallback rules: for every identity that any stored profile has and the chosen profile lacks, one rule under the comment `-- from profile <donor>: monitor not in <chosen>`. This is how an unplugged monitor keeps its rule. The donor is the most recently modified stored profile that holds the identity (ties by name), and each identity is written once. The stored profile of the chosen name counts as a donor too, so a profile carrying monitors that are not connected keeps them when it is persisted from an applied copy. A stored profile that fails validation is skipped, so nothing unvalidated reaches Lua.
+
+One writer: `apply` (through `hyprctl eval`) and `persist` (into the file, fallback rules included) take their rule lines from the same jq program, so the eval lines and the file lines are byte-identical for a profile.
 
 The write is atomic: a temp file in the same directory, then `mv`. A refused profile touches nothing. Before an existing `displays.lua` is overwritten it is copied to `displays.lua.bak.<epoch>`; the epoch is bumped past the newest existing backup when needed, so two persists in one second keep distinct backups, and all but the newest 10 are deleted.
 
@@ -136,9 +140,34 @@ pcall(require, "hypr.displays")
 
 It sits after the user's `hypr.monitors` require so generated rules win, and before the toggles so Omarchy's laptop-disable toggle still wins. If `displays.lua` does not exist it runs `persist --empty`. It then runs `hyprctl reload` and `doctor`, and exits with doctor's status. `~/.config/hypr/monitors.lua` is never read or written.
 
+## Profiles
+
+Profiles are the source of truth; `displays.lua` is derived from them. The CLI owns the store and the panel only calls the CLI.
+
+The store is `$OMARCHY_DISPLAYS_CONFIG_DIR` (default `~/.config/omarchy/displays`): one `profiles/<name>.json` per profile, in the schema above, and `active`, a file holding the active profile's name. Writes are atomic (temp file in the same directory, then `mv`).
+
+A name matches `^[A-Za-z0-9]([A-Za-z0-9 _-]{0,38}[A-Za-z0-9_-])?$`: 1 to 40 characters, starting with a letter or digit, never ending in a space. The name becomes a filename, so `..`, a slash, a leading dot and a trailing space are all refused with exit 3 and nothing is written. The stored profile's `name` field is always the file's name.
+
+| Command | Behaviour |
+|---|---|
+| `profile list` | JSON array sorted by name: `{name, active, identities, modified}`; `modified` is the file's mtime in epoch seconds. `[]` for an empty store. |
+| `profile show <name>` | The stored profile as JSON. Exit 3 if missing. |
+| `profile save <file> [--name N] [--activate]` | Validates the file exactly as `apply` does, writes `profiles/<N or the file's name>.json` with `name` set to that name, and with `--activate` writes `active`. Prints `saved <name>`. |
+| `profile delete <name>` | Removes the file, and clears `active` if it named this profile. Exit 3 if missing. |
+| `profile activate <name>` | Writes `active`. Exit 3 if missing. |
+| `profile match` | Prints the name of a stored profile whose set of identities equals the set `state` reports now (disabled monitors included), else prints nothing and exits 1. When several match, the active one wins, else the most recently modified. |
+
+Identity sets are compared as sets: order and duplicates do not matter. A monitor present in the profile and not connected, or connected and not in the profile, means no match.
+
 ## Panel
 
 The `kr34t1v.displays` plugin (`plugin/`, kind `panel`) opens from `omarchy-shell shell summon kr34t1v.displays '{}'` on the focused screen and closes on Escape. It never touches Hyprland or the disk itself: it runs `omarchy-displays` (the `cliPath` property, default `omarchy-displays` on `PATH`) and nothing else.
+
+A profile row sits above the canvas: a dropdown of the stored profile names, and the buttons Save, Save as, Rename and Delete. The dropdown shows `(unsaved)` while the canvas differs from the selected profile (`Model.isDirty`) or none is selected, with "edited from <name>" beside it when a profile is selected. On open the panel loads the active profile if `profile list` names one; otherwise it shows live state as `(unsaved)`.
+
+Choosing a profile loads it into the canvas without applying it (`Model.mergeProfile`): a connected monitor present in the profile takes the profile's fields (position, mode, scale, transform, mirror, vrr, bitdepth, cm, sdr values, enabled), which is what restores the fields `state` cannot report; a connected monitor absent from the profile keeps live state; a profile monitor that is not connected is not drawn but is kept in the profile on every save. Save writes the canvas over the selected profile and activates it (with none selected it asks for a name). Save as and Rename show an inline name field: Enter confirms, Escape cancels, and a name that fails the name rule or already exists is rejected under the field. Rename saves the stored profile under the new name, then deletes the old one, keeping `active` if it was the old one. Delete asks first with the stock `ConfirmDialog`. All of it goes through `profile save|show|delete`; the panel writes no file itself.
+
+When `state` reports an `identityWarning` on any monitor, the panel's top-right line shows it in the urgent colour. It does not block anything.
 
 It shows the connected monitors from `state` as one rectangle each, to scale. A single scale factor, computed in `plugin/Model.js`, fits the bounding box of all monitors into the canvas, and never enlarges past 1:1. Each rectangle has the logical size (pixels divided by scale, width and height swapped for transforms 1, 3, 5 and 7), a number, the model name and the connector. Pressing a rectangle selects it; dragging it moves it (cursor: open hand on hover, closed hand while dragging, accent border). The pointer delta is divided by the zoom factor, so positions are in layout pixels, and each move rewrites `monitors` once through `Model.applyDrag`: the rectangle snaps, is pushed out of any overlap, and is rounded to integers (never negative). Snapping aligns an edge to an edge of another rectangle (left or right to left or right, top or bottom to top or bottom) or a corner to a corner when both axes are within the threshold; a corner match wins over single-axis matches. The threshold is `round(16 / fit)` layout pixels, 16 canvas pixels at any zoom. Edge contact is allowed; real overlap is pushed out along the axis of least penetration, up to 8 passes. Zoom-to-fit stays automatic.
 
@@ -182,8 +211,8 @@ A scale is clean when `width * 120` and `height * 120` are both divisible by `ro
 
 Actions:
 
-- **Apply** builds a schema version 1 profile from the shown monitors (`mode` as `WIDTHxHEIGHT@HZ` with the refresh rate rounded, or the chosen special, `position` as `XxY`, `scale` as a number, `transform` as 0 to 7) into a temporary file and runs `apply <file> --timeout 15`. On exit 0 the panel reads `status` and the stock `ConfirmDialog` opens. Exit 2 shows that a countdown is already running.
-- **Keep** (the dialog's confirm button) runs `confirm` and then `persist` in one invocation. A failed `confirm` shows "Nothing to keep"; a failed `persist` after a successful `confirm` shows "Kept but not saved (exit N)".
+- **Apply** builds a schema version 1 profile named after the selected profile (`default` when none) from the shown monitors (`mode` as `WIDTHxHEIGHT@HZ` with the refresh rate rounded, or the chosen special, `position` as `XxY`, `scale` as a number, `transform` as 0 to 7) into a temporary file and runs `apply <file> --timeout 15`. On exit 0 the panel reads `status` and the stock `ConfirmDialog` opens. Exit 2 shows that a countdown is already running.
+- **Keep** (the dialog's confirm button) runs, in one `bash -c` chain, `confirm`, then `profile save <tmp> --name <selected or default> --activate` with the canvas (profile-only monitors included), then `persist`. An unsaved canvas with no selected profile is saved as `default`. A failed `confirm` shows "Nothing to keep"; a failed profile save shows "Kept but the profile was not saved"; a failed `persist` shows "Kept but not saved (exit N)". After a Keep the canvas is re-merged from the saved profile, so it reads as clean.
 - **Revert** (the button, the dialog's cancel button, or Escape in the dialog) runs `revert`.
 - The dialog mirrors `status`: the panel polls it on open, after `apply` exits 0, and every second while the dialog shows. The dialog is open exactly while `countdown` is non-null and shows its `remaining`, so reopening the panel mid-countdown shows the dialog with the right seconds. When `status` flips to null the CLI has confirmed or reloaded, the dialog closes and the panel re-reads `state`.
 - **Identify** shows a large badge for 3 seconds on every screen, numbered as the rectangles are. A badge sits on the screen whose name equals the monitor's connector.

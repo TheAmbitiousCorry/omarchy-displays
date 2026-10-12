@@ -7,6 +7,7 @@ cli="${1:-$here/../bin/omarchy-displays}"
 root=$(mktemp -d)
 export XDG_RUNTIME_DIR="$root/run"
 export FAKE_LOG="$root/hyprctl.log"
+export OMARCHY_DISPLAYS_CONFIG_DIR="$root/cfg"
 lock="$XDG_RUNTIME_DIR/omarchy-displays/countdown"
 mkdir -p "$root/bin" "$XDG_RUNTIME_DIR"
 
@@ -296,6 +297,171 @@ eq "persist --empty: exit 0" "$rc" 0
 eq "persist --empty: loaded marker, no rules" \
   "$(sed -n 3p "$hypr/displays.lua"; rule_lines "$hypr/displays.lua" | wc -l)" $'OMARCHY_DISPLAYS_LOADED = "0.1.0"\n0'
 
+
+# profiles
+cfg="$OMARCHY_DISPLAYS_CONFIG_DIR"
+export FAKE_FIXTURE="$here/fixtures/monitors-three.json"
+rm -rf "$cfg" "$last"
+unset_active() { rm -f "$cfg/active"; }
+profile_files() { ls "$cfg/profiles" 2>/dev/null | tr '\n' ' '; }
+
+run profile list
+eq "profile list with no store: empty array" "$(jq -c . <<<"$out")" '[]'
+
+run profile save "$root/desk.json"
+eq "profile save: exit 0" "$rc" 0
+eq "profile save: prints the name" "$out" "saved desk"
+eq "profile save: file lands under the name" "$(profile_files)" "desk.json "
+eq "profile save without --activate: no active file" "$([[ -e $cfg/active ]] && echo yes || echo no)" no
+run profile list
+eq "profile list: name, inactive, identities in file order" "$(jq -c '[.[] | {name, active, identities}]' <<<"$out")" \
+  '[{"name":"desk","active":false,"identities":["desc:Samsung Electric Company S27C31x H9DWB00491","desc:Dell Inc. DELL SE2726H HG5QZB4","desc:ASUSTek COMPUTER INC ASUS VG27V 0x00023706"]}]'
+eq "profile list: modified is the file's mtime" "$(jq '.[0].modified' <<<"$out")" "$(stat -c %Y "$cfg/profiles/desk.json")"
+
+run profile save "$root/desk.json" --name "Work 2" --activate
+eq "profile save --name: prints the given name" "$out" "saved Work 2"
+eq "profile save --name: rewrites the stored name" "$(jq -r .name "$cfg/profiles/Work 2.json")" "Work 2"
+eq "profile save --activate: writes active" "$(<"$cfg/active")" "Work 2"
+run profile list
+eq "profile list: sorted by name, one active" "$(jq -c '[.[] | [.name, .active]]' <<<"$out")" '[["Work 2",true],["desk",false]]'
+
+run profile delete "Work 2"
+eq "profile delete the active one: exit 0" "$rc" 0
+eq "profile delete the active one: file gone" "$(profile_files)" "desk.json "
+eq "profile delete the active one: active cleared" "$([[ -e $cfg/active ]] && echo yes || echo no)" no
+run profile delete "Work 2"
+eq "profile delete missing: exit 3" "$rc" 3
+run profile activate nosuch
+eq "profile activate missing: exit 3" "$rc" 3
+run profile activate desk
+eq "profile activate: sets active" "$(<"$cfg/active")" desk
+run profile save "$(profile other "$(jq '.name = "other"' <<<"$desk")")"
+run profile delete other
+eq "profile delete an inactive one: active unchanged" "$(<"$cfg/active")" desk
+run profile show desk
+eq "profile show: the stored profile" "$(jq -r '.name, (.monitors | length)' <<<"$out" | tr '\n' ' ')" "desk 3 "
+run profile show nosuch
+eq "profile show missing: exit 3" "$rc" 3
+
+# Names become paths; every refusal must leave the store as it was.
+store_before=$(profile_files)
+for bad in "../evil" "desk " " desk" ".hidden" "a/b" "-lead" "" "_lead" "tab	x"; do
+  run profile save "$root/desk.json" --name "$bad"
+  eq "profile save refuses name '$bad': exit 3" "$rc" 3
+done
+eq "profile save refusals write nothing" "$(profile_files)" "$store_before"
+run profile save "$(profile dotdot "$(jq '.name = ".."' <<<"$desk")")"
+eq "profile save with name '..' in the file: exit 3" "$rc" 3
+run profile delete ".."
+eq "profile delete '..': exit 3" "$rc" 3
+run profile activate "../x"
+eq "profile activate '../x': exit 3" "$rc" 3
+n40=$(printf 'a%.0s' $(seq 1 40))
+run profile save "$root/desk.json" --name "$n40"
+eq "profile save: a 40 character name is accepted" "$rc" 0
+run profile save "$root/desk.json" --name "${n40}a"
+eq "profile save: a 41 character name is refused" "$rc" 3
+run profile save "$root/desk.json" --name "a"
+eq "profile save: a 1 character name is accepted" "$rc" 0
+run profile save "$root/desk.json" --name "a b_c-d"
+eq "profile save: spaces, underscore and hyphen inside are accepted" "$rc" 0
+run profile save "$(profile badcm3 "$(jq '.monitors[0].cm = "srgb)"' <<<"$desk")")"
+eq "profile save of an unsafe profile: exit 3" "$rc" 3
+rm -f "$cfg/profiles/$n40.json" "$cfg/profiles/a.json" "$cfg/profiles/a b_c-d.json"
+
+nodell=$(jq '.name = "no-dell" | del(.monitors[1]) | .monitors[0].position = "1920x0" | .monitors[1].position = "0x0"' <<<"$desk")
+pair=$(jq '.name = "pair" | del(.monitors[1,2])' <<<"$desk")
+run profile save "$(profile nodell "$nodell")"
+run profile save "$(profile pair "$pair")"
+
+run profile match
+eq "profile match: the saved profile with exactly the connected identities" "$out" desk
+eq "profile match: exit 0" "$rc" 0
+run profile activate no-dell
+run profile match
+eq "profile match: a two-monitor profile does not match three monitors" "$out" desk
+export FAKE_FIXTURE="$here/fixtures/monitors-twins.json"
+run profile match
+eq "profile match with no equal set: exit 1" "$rc" 1
+eq "profile match with no equal set: prints nothing" "$out" ""
+export FAKE_FIXTURE="$here/fixtures/monitors-three.json"
+run profile save "$root/desk.json" --name desk2
+run profile activate desk2
+run profile match
+eq "profile match: the active profile wins among equal sets" "$out" desk2
+run profile delete desk2
+
+# persist without an argument and without last-applied: the active profile
+rm -rf "$hypr" "$last"
+run profile activate desk
+reset
+run persist
+eq "persist with no last-applied: uses the active profile" "$(sed -n 2p "$hypr/displays.lua")" "-- Profile: desk"
+eq "persist with no last-applied: exit 0" "$rc" 0
+run apply "$(profile other "$(jq '.name = "applied"' <<<"$desk")")"
+run confirm
+reset
+run persist
+eq "persist: last-applied outranks the active profile" "$(sed -n 2p "$hypr/displays.lua")" "-- Profile: applied"
+rm -f "$last"
+unset_active
+reset
+run persist
+eq "persist with no last-applied and no active profile: exit 3" "$rc" 3
+eq "persist with no last-applied and no active profile: hyprctl never called" "$(log | wc -c)" 0
+printf 'ghost\n' > "$cfg/active"
+run persist
+eq "persist with an active name that has no file: exit 3" "$rc" 3
+run profile activate desk
+
+# fallback rules for identities that only another profile holds
+dell_rule='hl.monitor({ output = "desc:Dell Inc. DELL SE2726H HG5QZB4", mode = "1920x1080@144", position = "1920x0", scale = 1.5, mirror = "DP-1" })'
+old=$(jq '.name = "old" | .monitors = [.monitors[1] | .position = "0x5000"]' <<<"$desk")
+run profile save "$(profile old "$old")"
+touch -d '2020-01-01' "$cfg/profiles/old.json"
+touch -d '2021-01-01' "$cfg/profiles/desk.json"
+touch -d '2022-01-01' "$cfg/profiles/no-dell.json"
+run persist "$cfg/profiles/no-dell.json"
+eq "fallback: exit 0" "$rc" 0
+eq "fallback: the chosen profile's rules, then the donor under its comment" "$(sed -n '4,$p' "$hypr/displays.lua")" \
+'hl.monitor({ output = "desc:Samsung Electric Company S27C31x H9DWB00491", mode = "1920x1080@60", position = "1920x0", scale = 1, transform = 1, vrr = 2, bitdepth = 10, cm = "srgb", sdrbrightness = 1.25, sdrsaturation = 0.5 })
+hl.monitor({ output = "desc:ASUSTek COMPUTER INC ASUS VG27V 0x00023706", mode = "preferred", position = "0x0", scale = 1 })
+-- from profile desk: monitor not in no-dell
+'"$dell_rule"
+eq "fallback: the most recently modified donor wins" "$(grep -c 'from profile' "$hypr/displays.lua")" 1
+eq "fallback: older donor's position is not used" "$(grep -c '0x5000' "$hypr/displays.lua" || true)" 0
+touch -d '2023-01-01' "$cfg/profiles/old.json"
+run persist "$cfg/profiles/no-dell.json"
+eq "fallback: after old becomes newest it supplies the rule" "$(grep -A1 'from profile' "$hypr/displays.lua" | tail -n 1 | grep -c '0x5000')" 1
+eq "fallback: the comment names the donor" "$(grep 'from profile' "$hypr/displays.lua")" "-- from profile old: monitor not in no-dell"
+run profile delete old
+
+run persist "$cfg/profiles/desk.json"
+eq "no fallback: every identity is in the chosen profile" "$(grep -c 'from profile' "$hypr/displays.lua" || true)" 0
+eq "no fallback: exactly the chosen profile's three rules" "$(rule_lines "$hypr/displays.lua" | wc -l)" 3
+run persist "$cfg/profiles/pair.json"
+eq "fallback: two donors-only identities give two fallback rules" "$(grep -c 'from profile' "$hypr/displays.lua")" 2
+eq "fallback: an identity in both profiles is written once" \
+  "$(rule_lines "$hypr/displays.lua" | grep -c 'Samsung')" 1
+eq "fallback: header still names the chosen profile" "$(sed -n 2p "$hypr/displays.lua")" "-- Profile: pair"
+
+# a corrupt or hostile stored profile is skipped, not written into Lua
+evil=$(jq '.name = "evil" | .monitors = [{identity: "desc:Evil Monitor", enabled: true, mode: "1x1@1", position: "0x0", scale: 1, cm: "srgb) os.exit() --"}]' <<<"$desk")
+printf '%s\n' "$evil" > "$cfg/profiles/evil.json"
+touch -d '2030-01-01' "$cfg/profiles/evil.json"
+run persist "$cfg/profiles/pair.json"
+eq "hostile stored profile: persist still succeeds" "$rc" 0
+eq "hostile stored profile: nothing of it reaches displays.lua" "$(grep -c -i 'evil' "$hypr/displays.lua" || true)" 0
+rm -f "$cfg/profiles/evil.json"
+
+# 12 persists through the active profile, with fallbacks, still leave 10 backups
+rm -rf "$hypr" "$last"
+run profile activate no-dell
+for i in $(seq 1 12); do run persist; done
+eq "backups: 12 persists from the active profile leave exactly 10" "$(bak_count)" 10
+eq "backups: the fallback block survives rotation" "$(grep -c 'from profile desk' "$hypr/displays.lua")" 1
+run profile activate desk
+
 # doctor
 rm -rf "$hypr"; mkdir -p "$hypr"
 printf 'require("hypr.monitors")\nrequire("default.hypr.toggles")\n' > "$hypr/hyprland.lua"
@@ -313,6 +479,16 @@ eq "doctor with a stale marker: notes the version" "${out%%;*}" 'note: displays.
 FAKE_LOADED= run doctor
 eq "doctor with no marker in the running config: exit 1" "$rc" 1
 eq "doctor changes nothing" "$(ls "$hypr")" hyprland.lua
+
+reset
+rm -f "$cfg/active" "$cfg"/profiles/*.json
+run apply "$(profile applied '{"schemaVersion":1,"name":"applied","monitors":[{"identity":"desc:A B 1","enabled":true,"mode":"1920x1080@60","position":"0x0","scale":1}]}')"
+run confirm
+run profile save "$(profile other '{"schemaVersion":1,"name":"other","monitors":[{"identity":"desc:A B 1","enabled":true,"mode":"1920x1080@50","position":"0x0","scale":1}]}')"
+run profile activate other
+eq "profile activate: drops last-applied" "$([[ -e $XDG_RUNTIME_DIR/omarchy-displays/last-applied.json ]] && echo yes || echo no)" no
+run persist
+eq "persist after activate: writes the activated profile" "$(sed -n 2p "$hypr/displays.lua")" '-- Profile: other'
 
 printf '\n%d passed, %d failed\n' "$passes" "$fails"
 exit $((fails > 0))

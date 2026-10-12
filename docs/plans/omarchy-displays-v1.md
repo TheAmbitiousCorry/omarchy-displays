@@ -225,7 +225,7 @@ a profile list in the panel with save, rename, duplicate, delete and apply.
 The generated `displays.lua` carries a rule per monitor in every profile,
 grouped by identity, so an unplugged monitor keeps its rule.
 
-- [ ] Verification: save the current layout as `desk`. Edit the JSON to add
+- [x] Verification: save the current layout as `desk`. Edit the JSON to add
       a fourth, fictional identity. Apply `desk`: the three real monitors are
       unchanged and `displays.lua` still contains the fourth rule. A name
       with `../` is refused. Two monitors with the same make and model and an
@@ -293,6 +293,16 @@ the omarchy-sysmon style per `writing:technical-writing`. Unknown 7 settled.
 - Spec domain: docs, install.
 
 ## Deviation log
+
+- 2026-10-12, step 6: the plan's name regex allows a trailing space, which
+  the verification asked to refuse, so the rule is now
+  `^[A-Za-z0-9]([A-Za-z0-9 _-]{0,38}[A-Za-z0-9_-])?$` (same 1 to 40
+  characters, no trailing space) in the CLI and Model.js. `persist` counts the
+  stored profile of the chosen name as a fallback donor, so extras survive a
+  persist from an applied copy. `last-applied.json` outranks the active
+  profile while it exists, so a `profile activate` followed by a bare
+  `persist` in the same login session persists the last applied layout.
+  Duplicate is covered by Save as.
 
 - 2026-10-12, step 3: no departure on the loader (`hyprctl reload` runs a
   fresh Lua state, so `pcall(require, "hypr.displays")` stands). The sentinel

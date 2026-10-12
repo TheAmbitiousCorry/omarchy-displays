@@ -9,7 +9,7 @@ import "Model.js" as Model
 
 // Monitor layout panel. Every change to the system goes through the
 // omarchy-displays CLI; this file only reads `state` and `status` and calls
-// apply, confirm, persist and revert.
+// apply, confirm, persist, revert and the profile subcommands.
 Item {
   id: root
 
@@ -30,6 +30,24 @@ Item {
   property string lastAction: ""
   property int dragIndex: -1
   property bool advancedOpen: false
+
+  property var liveMonitors: []
+  property bool stateLoading: false
+  property bool mergeOnState: false
+  property var profiles: []
+  property string selectedProfile: ""
+  property var profileData: null
+  property var profileExtra: []
+  property bool loadActiveOnList: false
+  property string showName: ""
+  property string nameMode: ""
+  property string nameError: ""
+  property string profileAction: ""
+  property string profileTarget: ""
+  property var profileSnapshot: null
+  property string keepName: ""
+  property var keepSnapshot: null
+  property bool deleteAsking: false
 
   readonly property int snapPixels: 16
   readonly property int nudgeStep: 10
@@ -62,11 +80,27 @@ Item {
     var s = Math.round(m.scale * 1000) / 1000
     return s + " does not divide " + m.width + "x" + m.height + " cleanly (Hyprland would warn)"
   }
+  readonly property var profileNames: profiles.map(function(p) { return p.name })
+  readonly property bool dirty: profileData === null || Model.isDirty(monitors, profileData)
+  readonly property string profileName: selectedProfile !== "" ? selectedProfile : "default"
+  readonly property bool profileBusy: profileRunner.running
+  readonly property string identityWarning: {
+    var w = liveMonitors.filter(function(m) { return !!m.identityWarning })
+    if (w.length === 0) return ""
+    return Model.shortName(w[0]) + " (" + w[0].name + "): " + w[0].identityWarning
+  }
   readonly property var logical: selected ? Model.logicalSize(selected.width, selected.height, selected.scale, selected.transform) : ({ width: 0, height: 0 })
 
   function open(payloadJson) {
+    selectedProfile = ""
+    profileData = null
+    profileExtra = []
+    mergeOnState = false
+    nameMode = ""
+    deleteAsking = false
     refreshState()
     refreshStatus()
+    refreshProfiles(true)
     opened = true
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
@@ -84,6 +118,7 @@ Item {
 
   function refreshState() {
     if (stateProc.running) return
+    stateLoading = true
     stateProc.command = [cliPath, "state"]
     stateProc.running = true
   }
@@ -92,6 +127,106 @@ Item {
     if (statusProc.running) return
     statusProc.command = [cliPath, "status"]
     statusProc.running = true
+  }
+
+  function refreshProfiles(loadActive) {
+    if (profileListProc.running) return
+    loadActiveOnList = loadActive
+    profileListProc.command = [cliPath, "profile", "list"]
+    profileListProc.running = true
+  }
+
+  function loadProfile(name) {
+    if (profileShowProc.running) return
+    showName = name
+    profileShowProc.command = [cliPath, "profile", "show", name]
+    profileShowProc.running = true
+  }
+
+  // Puts a stored profile on the canvas; a state read still in flight does the merge when it lands.
+  function showProfile(name, data) {
+    selectedProfile = name
+    profileData = data
+    if (stateLoading || liveMonitors.length === 0) {
+      mergeOnState = true
+      return
+    }
+    var merged = Model.mergeProfile(data, liveMonitors)
+    monitors = merged.monitors
+    profileExtra = merged.extra
+    selectedIndex = Math.min(selectedIndex, Math.max(0, monitors.length - 1))
+  }
+
+  function runProfile(action, target, command, snapshot) {
+    if (profileRunner.running) return
+    profileAction = action
+    profileTarget = target
+    profileSnapshot = snapshot
+    error = ""
+    profileRunner.command = command
+    profileRunner.running = true
+  }
+
+  function profileDone(code) {
+    if (code !== 0) {
+      error = "Profile " + profileAction + " failed (exit " + code + ")"
+    } else if (profileAction === "save") {
+      selectedProfile = profileTarget
+      profileData = profileSnapshot
+    } else if (profileAction === "rename") {
+      selectedProfile = profileTarget
+      profileData = Object.assign({}, profileData, { name: profileTarget })
+    } else if (profileAction === "delete") {
+      selectedProfile = ""
+      profileData = null
+      profileExtra = []
+    }
+    refreshProfiles(false)
+  }
+
+  // The monitor list, extras included, goes to the CLI as a file: no profile string is parsed by the shell.
+  function saveProfile(name) {
+    var profile = Model.toProfile(monitors, name, profileExtra)
+    runProfile("save", name, ["bash", "-c",
+      'f=$(mktemp --suffix=.json); printf "%s" "$1" > "$f"; "$2" profile save "$f" --name "$3" --activate; rc=$?; rm -f "$f"; exit $rc',
+      "displays-save", JSON.stringify(profile), cliPath, name], profile)
+  }
+
+  function renameProfile(name) {
+    var wasActive = profiles.some(function(p) { return p.name === selectedProfile && p.active })
+    runProfile("rename", name, ["bash", "-c",
+      'f=$(mktemp --suffix=.json); "$1" profile show "$2" > "$f" && "$1" profile save "$f" --name "$3" $4 && "$1" profile delete "$2"; rc=$?; rm -f "$f"; exit $rc',
+      "displays-rename", cliPath, selectedProfile, name, wasActive ? "--activate" : ""], null)
+  }
+
+  function deleteProfile() {
+    deleteAsking = false
+    runProfile("delete", selectedProfile, [cliPath, "profile", "delete", selectedProfile], null)
+  }
+
+  function startName(mode) {
+    nameMode = mode
+    nameError = ""
+    nameField.text = mode === "rename" ? selectedProfile : ""
+    Qt.callLater(function() { nameField.forceActiveFocus() })
+  }
+
+  function cancelName() {
+    nameMode = ""
+    nameError = ""
+    keyCatcher.forceActiveFocus()
+  }
+
+  function confirmName(text) {
+    var err = Model.validateName(text, profileNames)
+    if (err !== "") {
+      nameError = err
+      return
+    }
+    var mode = nameMode
+    cancelName()
+    if (mode === "rename") renameProfile(text)
+    else saveProfile(text)
   }
 
   function updateMonitor(index, patch) {
@@ -144,7 +279,7 @@ Item {
   }
 
   function apply() {
-    var profile = JSON.stringify(Model.toProfile(monitors, "panel"))
+    var profile = JSON.stringify(Model.toProfile(monitors, profileName))
     // The profile is passed as $1 so no monitor string is ever parsed by the shell.
     run("apply", ["bash", "-c",
       'f=$(mktemp --suffix=.json); printf "%s" "$1" > "$f"; "$2" apply "$f" --timeout "$3"; rc=$?; rm -f "$f"; exit $rc',
@@ -153,8 +288,13 @@ Item {
 
   function keep() {
     counting = false
-    // Exit 100 means confirm itself failed; any other non-zero is persist's.
-    run("keep", ["bash", "-c", '"$1" confirm || exit 100; "$1" persist', "displays-keep", cliPath])
+    keepName = profileName
+    keepSnapshot = Model.toProfile(monitors, keepName, profileExtra)
+    // Exit 100 means confirm failed and 101 the profile save; any other non-zero is persist's.
+    run("keep", ["bash", "-c",
+      '"$1" confirm || exit 100; f=$(mktemp --suffix=.json); printf "%s" "$2" > "$f"; ' +
+      '"$1" profile save "$f" --name "$3" --activate || { rm -f "$f"; exit 101; }; rm -f "$f"; "$1" persist',
+      "displays-keep", cliPath, JSON.stringify(keepSnapshot), keepName])
   }
 
   function revert() {
@@ -173,8 +313,14 @@ Item {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
+        root.stateLoading = false
         try {
-          root.monitors = JSON.parse(text)
+          var live = JSON.parse(text)
+          var merged = root.profileData !== null ? Model.mergeProfile(root.profileData, live) : null
+          root.liveMonitors = live
+          root.profileExtra = merged !== null ? merged.extra : []
+          root.monitors = root.mergeOnState && merged !== null ? merged.monitors : live
+          root.mergeOnState = false
           root.selectedIndex = Math.min(root.selectedIndex, Math.max(0, root.monitors.length - 1))
         } catch (e) {
           root.error = "Could not read monitor state"
@@ -184,6 +330,53 @@ Item {
     onExited: function(code) {
       if (code !== 0) root.error = "omarchy-displays state failed (exit " + code + ")"
     }
+  }
+
+  Process {
+    id: profileListProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var list
+        try {
+          list = JSON.parse(text)
+        } catch (e) {
+          root.error = "Could not read the profile list"
+          return
+        }
+        root.profiles = list
+        if (!root.loadActiveOnList) return
+        root.loadActiveOnList = false
+        var active = list.filter(function(p) { return p.active })
+        if (active.length > 0) root.loadProfile(active[0].name)
+      }
+    }
+  }
+
+  Process {
+    id: profileShowProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          root.showProfile(root.showName, JSON.parse(text))
+        } catch (e) {
+          root.error = "Could not read profile " + root.showName
+        }
+      }
+    }
+  }
+
+  Process {
+    id: profileRunner
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var line = String(text || "").trim().split("\n")[0]
+        if (line !== "" && root.error !== "") root.error = root.error + ": " + line
+      }
+    }
+    onExited: function(code) { root.profileDone(code) }
   }
 
   // The CLI owns the countdown clock; the dialog only mirrors what `status` reports.
@@ -217,6 +410,12 @@ Item {
     }
     onExited: function(code) {
       root.busy = false
+      if (root.lastAction === "keep" && code !== 100 && code !== 101) {
+        root.selectedProfile = root.keepName
+        root.profileData = root.keepSnapshot
+        root.mergeOnState = true
+        root.refreshProfiles(false)
+      }
       if (root.lastAction === "apply") {
         if (code === 0) {
           root.refreshStatus()
@@ -225,6 +424,8 @@ Item {
         }
       } else if (code === 100 && root.lastAction === "keep") {
         root.error = "Nothing to keep"
+      } else if (code === 101 && root.lastAction === "keep") {
+        root.error = "Kept but the profile was not saved"
       } else if (code !== 0 && root.lastAction === "keep") {
         root.error = "Kept but not saved (exit " + code + ")"
       } else if (code !== 0) {
@@ -263,7 +464,8 @@ Item {
 
       Keys.priority: Keys.BeforeItem
       Keys.onPressed: function(event) {
-        if (dialog.handleKey(event)) { event.accepted = true; return }
+        if (dialog.handleKey(event) || deleteDialog.handleKey(event)) { event.accepted = true; return }
+        if (event.key === Qt.Key_Escape && root.nameMode !== "") { root.cancelName(); event.accepted = true; return }
         if (event.key === Qt.Key_Escape) { root.dismiss(); event.accepted = true; return }
         var step = (event.modifiers & Qt.ShiftModifier) ? 1 : root.nudgeStep
         var arrows = {}
@@ -282,7 +484,7 @@ Item {
         id: card
         anchors.centerIn: parent
         width: Math.min(Style.space(900), parent.width - Style.space(32))
-        height: Math.min(Style.space(620), parent.height - Style.space(32))
+        height: Math.min(Style.space(680), parent.height - Style.space(32))
         color: Color.popups.background
         borderSpec: Border.surfaceSpec("popups", "border", Color.popups.border, Math.max(1, Style.space(2)))
         radius: Style.cornerRadius
@@ -311,14 +513,113 @@ Item {
             }
             Text {
               textFormat: Text.PlainText
-              visible: root.error !== ""
-              text: root.error
+              visible: text !== ""
+              text: root.error !== "" ? root.error : root.identityWarning
               color: Color.urgent
               font.family: Style.font.family
               font.pixelSize: Style.font.bodySmall
               elide: Text.ElideRight
               Layout.maximumWidth: Style.space(560)
             }
+          }
+
+          RowLayout {
+            Layout.fillWidth: true
+            spacing: Style.spacing.controlGap
+
+            Dropdown {
+              id: profileDropdown
+              showLabel: false
+              Layout.preferredWidth: Style.space(240)
+              options: Model.profileOptions(root.profileNames, root.dirty)
+              Binding { target: profileDropdown; property: "value"; value: root.dirty ? Model.UNSAVED : root.selectedProfile }
+              onChanged: function(v) { if (v !== Model.UNSAVED) root.loadProfile(v) }
+            }
+            Text {
+              textFormat: Text.PlainText
+              visible: root.dirty && root.selectedProfile !== ""
+              text: "edited from " + root.selectedProfile
+              color: Qt.darker(Color.popups.text, 1.4)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+              elide: Text.ElideRight
+              Layout.maximumWidth: Style.space(200)
+            }
+            Item { Layout.fillWidth: true }
+            Button {
+              text: "Save"
+              bordered: true
+              focusable: true
+              enabled: !root.profileBusy && !root.busy && !root.counting && root.monitors.length > 0
+              opacity: enabled ? 1 : 0.5
+              foreground: Color.popups.text
+              onClicked: {
+                if (root.selectedProfile === "") root.startName("saveas")
+                else root.saveProfile(root.selectedProfile)
+              }
+            }
+            Button {
+              text: "Save as"
+              bordered: true
+              focusable: true
+              enabled: !root.profileBusy && !root.busy && !root.counting && root.monitors.length > 0
+              opacity: enabled ? 1 : 0.5
+              foreground: Color.popups.text
+              onClicked: root.startName("saveas")
+            }
+            Button {
+              text: "Rename"
+              bordered: true
+              focusable: true
+              enabled: !root.profileBusy && !root.busy && !root.counting && root.selectedProfile !== ""
+              opacity: enabled ? 1 : 0.5
+              foreground: Color.popups.text
+              onClicked: root.startName("rename")
+            }
+            Button {
+              text: "Delete"
+              bordered: true
+              focusable: true
+              enabled: !root.profileBusy && !root.busy && !root.counting && root.selectedProfile !== ""
+              opacity: enabled ? 1 : 0.5
+              foreground: Color.popups.text
+              onClicked: root.deleteAsking = true
+            }
+          }
+
+          RowLayout {
+            visible: root.nameMode !== ""
+            Layout.fillWidth: true
+            spacing: Style.spacing.controlGap
+
+            Text {
+              textFormat: Text.PlainText
+              text: root.nameMode === "rename" ? "Rename to" : "Save as"
+              color: Qt.darker(Color.popups.text, 1.4)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+              font.bold: true
+            }
+            TextField {
+              id: nameField
+              foreground: Color.popups.text
+              Layout.preferredWidth: Style.space(260)
+              placeholderText: "Enter to confirm, Escape to cancel"
+              maximumLength: 40
+              onAccepted: root.confirmName(text)
+              onTextEdited: root.nameError = ""
+            }
+            Text {
+              textFormat: Text.PlainText
+              visible: root.nameError !== ""
+              text: root.nameError
+              color: Color.urgent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+              elide: Text.ElideRight
+              Layout.fillWidth: true
+            }
+            Item { Layout.fillWidth: true; visible: root.nameError === "" }
           }
 
           BorderSurface {
@@ -708,6 +1009,17 @@ Item {
             }
           }
         }
+      }
+
+      ConfirmDialog {
+        id: deleteDialog
+        anchors.fill: parent
+        opened: root.deleteAsking
+        message: "Delete profile " + root.selectedProfile + "?"
+        cancelText: "Cancel"
+        confirmText: "Delete"
+        onCanceled: root.deleteAsking = false
+        onConfirmed: root.deleteProfile()
       }
 
       ConfirmDialog {

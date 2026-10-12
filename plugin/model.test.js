@@ -395,3 +395,122 @@ test("hasOverlap finds an overlap between non-adjacent rects and handles zero or
   assert.strictEqual(Model.hasOverlap([far]), false)
   assert.strictEqual(Model.hasOverlap([]), false)
 })
+
+const live = () => [
+  mon({ name: "DP-1", identity: "desc:A", x: 0, y: 1080, vrr: false, bitdepth: undefined }),
+  mon({ name: "DP-2", identity: "desc:B", x: 1920, y: 0, refreshRate: 143.98599 }),
+]
+const entry = (over) => Object.assign({
+  identity: "desc:A", enabled: true, mode: "1920x1080@60", position: "100x200", scale: 1.5, transform: 1,
+  mirror: null, vrr: 2, bitdepth: 10, cm: "dcip3", sdrbrightness: 1.25, sdrsaturation: 0.5,
+}, over)
+const prof = (...monitors) => ({ schemaVersion: 1, name: "desk", monitors })
+
+test("validateName accepts the boundaries: 1 and 40 characters, inner space, underscore and hyphen", () => {
+  for (const n of ["a", "A1", "a b", "a_b-c", "x".repeat(40), "a_", "a-"]) assert.strictEqual(Model.validateName(n), "", n)
+})
+
+test("validateName refuses 41 characters, empty, path characters, a leading dot, space or hyphen, and a trailing space", () => {
+  for (const n of ["", "x".repeat(41), "..", "../x", "a/b", ".a", " a", "-a", "_a", "a ", "a\n", "é"])
+    assert.notStrictEqual(Model.validateName(n), "", JSON.stringify(n))
+})
+
+test("validateName refuses a name that already exists and accepts it once the list lacks it", () => {
+  assert.match(Model.validateName("desk", ["desk", "work"]), /already exists/)
+  assert.strictEqual(Model.validateName("desk", ["work"]), "")
+})
+
+test("mergeProfile: the profile's fields win over live state", () => {
+  const { monitors, extra } = Model.mergeProfile(prof(entry()), live())
+  const a = monitors[0]
+  assert.deepStrictEqual([a.x, a.y, a.scale, a.transform], [100, 200, 1.5, 1])
+  assert.deepStrictEqual([a.modeValue, a.width, a.height, a.refreshRate], ["1920x1080@60", 1920, 1080, 60])
+  assert.deepStrictEqual([a.vrrMode, a.bitdepth, a.cm, a.sdrBrightness, a.sdrSaturation], [2, 10, "dcip3", 1.25, 0.5])
+  assert.strictEqual(a.disabled, false)
+  assert.deepStrictEqual(extra, [])
+})
+
+test("mergeProfile: a connected monitor the profile lacks keeps live state exactly", () => {
+  const l = live()
+  const { monitors } = Model.mergeProfile(prof(entry()), l)
+  assert.deepStrictEqual(monitors[1], l[1])
+})
+
+test("mergeProfile: profile-only monitors are carried in extra, not drawn", () => {
+  const ghost = entry({ identity: "desc:Ghost", position: "3840x0" })
+  const { monitors, extra } = Model.mergeProfile(prof(entry(), ghost), live())
+  assert.strictEqual(monitors.length, 2)
+  assert.deepStrictEqual(extra, [ghost])
+})
+
+test("mergeProfile: a disabled entry disables the monitor and leaves its other fields live", () => {
+  const l = live()
+  const { monitors } = Model.mergeProfile(prof({ identity: "desc:A", enabled: false }), l)
+  assert.strictEqual(monitors[0].disabled, true)
+  assert.strictEqual(monitors[0].x, l[0].x)
+})
+
+test("mergeProfile: a special mode is kept as the choice and the live size stays", () => {
+  const { monitors } = Model.mergeProfile(prof(entry({ mode: "preferred" })), live())
+  assert.deepStrictEqual([monitors[0].modeValue, monitors[0].width, monitors[0].refreshRate], ["preferred", 1920, 74.973])
+})
+
+test("mergeProfile: position auto and an entry without optional fields leave those live", () => {
+  const { monitors } = Model.mergeProfile(prof({ identity: "desc:A", enabled: true, mode: "preferred", position: "auto", scale: 2 }), live())
+  assert.deepStrictEqual([monitors[0].x, monitors[0].y, monitors[0].scale, monitors[0].transform], [0, 1080, 2, 0])
+  assert.strictEqual(monitors[0].bitdepth, undefined)
+})
+
+test("mergeProfile then toProfile round-trips the vrr, bitdepth, cm and sdr fields the live readback loses", () => {
+  const { monitors, extra } = Model.mergeProfile(prof(entry()), live())
+  const back = Model.toProfile(monitors, "desk", extra).monitors[0]
+  assert.deepStrictEqual([back.vrr, back.bitdepth, back.cm, back.sdrbrightness, back.sdrsaturation], [2, 10, "dcip3", 1.25, 0.5])
+})
+
+test("toProfile appends extra entries verbatim after the connected ones", () => {
+  const ghost = entry({ identity: "desc:Ghost" })
+  const p = Model.toProfile(live(), "desk", [ghost])
+  assert.deepStrictEqual(p.monitors.map((m) => m.identity), ["desc:A", "desc:B", "desc:Ghost"])
+  assert.strictEqual(p.monitors[2], ghost)
+})
+
+test("isDirty is false right after a merge, and when only a disconnected profile monitor differs", () => {
+  const p = prof(entry(), entry({ identity: "desc:Ghost" }))
+  const { monitors } = Model.mergeProfile(p, [live()[0]])
+  assert.strictEqual(Model.isDirty(monitors, p), false)
+})
+
+test("isDirty: any one edited field flips it", () => {
+  const p = prof(entry())
+  const base = Model.mergeProfile(p, [live()[0]]).monitors
+  const edits = { x: 101, y: 201, scale: 1.25, transform: 2, vrrMode: 1, bitdepth: 8, cm: "srgb", sdrBrightness: 1.5, sdrSaturation: 1, modeValue: "1920x1080@75", disabled: true }
+  for (const k of Object.keys(edits)) {
+    assert.strictEqual(Model.isDirty([Object.assign({}, base[0], { [k]: edits[k] })], p), true, k)
+  }
+})
+
+test("isDirty: a connected monitor the profile lacks is dirty", () => {
+  const p = prof(entry())
+  assert.strictEqual(Model.isDirty(Model.mergeProfile(p, live()).monitors, p), true)
+})
+
+test("isDirty: a field the profile does not carry is unspecified, but transform and mirror default to 0 and none", () => {
+  const p = prof({ identity: "desc:A", enabled: true, mode: "1920x1080@75", position: "0x1080", scale: 1 })
+  const m = mon({ identity: "desc:A", vrr: true, cm: "hdr" })
+  assert.strictEqual(Model.isDirty([m], p), false)
+  assert.strictEqual(Model.isDirty([mon({ identity: "desc:A", transform: 1 })], p), true)
+  assert.strictEqual(Model.isDirty([mon({ identity: "desc:A", mirror: "desc:B" }), mon({ identity: "desc:B", x: 5000 })], p), true)
+})
+
+test("isDirty compares scale at the precision toProfile writes", () => {
+  const p = prof(entry({ scale: 1.5 }))
+  const base = Model.mergeProfile(p, [live()[0]]).monitors[0]
+  assert.strictEqual(Model.isDirty([Object.assign({}, base, { scale: 1.5004 })], p), false)
+  assert.strictEqual(Model.isDirty([Object.assign({}, base, { scale: 1.501 })], p), true)
+})
+
+test("profileOptions lists the names, with (unsaved) first only when asked", () => {
+  assert.deepStrictEqual(Model.profileOptions(["a", "b"], false).map((o) => o.value), ["a", "b"])
+  const o = Model.profileOptions(["a"], true)
+  assert.deepStrictEqual([o[0].label, o[0].value, o[1].value], ["(unsaved)", Model.UNSAVED, "a"])
+})

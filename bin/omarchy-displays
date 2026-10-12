@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # omarchy:summary=Show, apply, confirm, revert, and persist Hyprland monitor layouts
-# omarchy:args=state | apply PROFILE.json [--timeout N] | confirm | revert | status | persist [PROFILE.json] | doctor | version | help
-# omarchy:examples=omarchy displays state | omarchy displays apply desk.json | omarchy displays apply desk.json --timeout 30 | omarchy displays confirm | omarchy displays revert | omarchy displays status | omarchy displays persist | omarchy displays persist desk.json | omarchy displays doctor
+# omarchy:args=state | apply PROFILE.json [--timeout N] | confirm | revert | status | persist [PROFILE.json] | profile list|show|save|delete|activate|match | doctor | version | help
+# omarchy:examples=omarchy displays state | omarchy displays apply desk.json | omarchy displays apply desk.json --timeout 30 | omarchy displays confirm | omarchy displays revert | omarchy displays status | omarchy displays persist | omarchy displays persist desk.json | omarchy displays profile list | omarchy displays profile save desk.json --activate | omarchy displays profile match | omarchy displays doctor
 
 VERSION=0.1.0
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
@@ -14,13 +14,20 @@ HYPR_DIR="${OMARCHY_DISPLAYS_HYPR_DIR:-$HOME/.config/hypr}"
 LOADER_LINE='pcall(require, "hypr.displays")'
 DEFAULT_TIMEOUT=15
 KEEP_BACKUPS=10
-PERSIST_TMP=
+CONFIG_DIR="${OMARCHY_DISPLAYS_CONFIG_DIR:-$HOME/.config/omarchy/displays}"
+PROFILES="$CONFIG_DIR/profiles"
+ACTIVE="$CONFIG_DIR/active"
+TMP_FILE=
+trap '[[ -z $TMP_FILE ]] || rm -f "$TMP_FILE"' EXIT
 
 # EDID strings are attacker-controlled and end up inside a Lua string handed to
 # eval, so only these characters may pass. jq's `$` also matches before a
 # trailing newline, hence the explicit newline test in the validator.
 STRING_RE='^[A-Za-z0-9 ._:@/+-]+$'
 NUMBER_RE='^-?[0-9]+(\.[0-9]+)?$'
+# A profile name becomes a filename: no leading dot, slash or space, and no
+# trailing space.
+NAME_RE='^[A-Za-z0-9]([A-Za-z0-9 _-]{0,38}[A-Za-z0-9_-])?$'
 
 usage() {
   cat <<'EOF'
@@ -30,7 +37,13 @@ Usage: omarchy-displays <command>
   confirm                         keep the applied layout
   revert                          reload the Hyprland config, undoing any unconfirmed change
   status                          the live countdown as JSON: pid, deadline, seconds remaining
-  persist [PROFILE.json]          write displays.lua from a profile (default: the last applied) and reload
+  persist [PROFILE.json]          write displays.lua from a profile (default: the last applied, else the active) and reload
+  profile list                    saved profiles as JSON: name, active, identities, modified
+  profile show NAME               one saved profile
+  profile save FILE [--name N] [--activate]  store a profile, optionally making it the active one
+  profile delete NAME             remove a saved profile
+  profile activate NAME           mark a saved profile as the active one
+  profile match                   print the saved profile whose monitors are exactly the connected ones; exit 1 if none
   doctor                          check that hyprland.lua loads displays.lua and the running config has it
   loader-line                     print the line hyprland.lua must contain
   version                         print the version
@@ -119,13 +132,19 @@ RULES='
   | "hl.monitor({ " + join(", ") + " })"
 '
 
+# Prints one problem per line for a readable profile file; no output means
+# every string and number in it is safe to write into Lua.
+profile_problems() {
+  jq -r --arg str_re "$STRING_RE" --arg num_re "$NUMBER_RE" "$VALIDATE" "$1"
+}
+
 # Exits 3 with the problems on stderr unless the file is a profile whose every
 # string and number is safe to write into Lua.
 validate_profile() {
   local file=$1 problems
   [[ -f $file ]] || reject "no such file: $file"
   jq empty "$file" 2>/dev/null || reject "$file is not valid JSON"
-  problems=$(jq -r --arg str_re "$STRING_RE" --arg num_re "$NUMBER_RE" "$VALIDATE" "$file")
+  problems=$(profile_problems "$file")
   if [[ -n $problems ]]; then
     echo "omarchy-displays: refusing $file:" >&2
     sed 's/^/  /' <<<"$problems" >&2
@@ -134,8 +153,10 @@ validate_profile() {
 }
 
 # The only producer of rule lines: apply evals them and persist writes them.
+# With an identity, only that monitor's rule.
 rules_of() {
-  jq -r "$RULES" "$1"
+  jq -r --arg only "${2:-}" \
+    "(if \$only != \"\" then .monitors |= ([.[] | select(.identity == \$only)] | .[:1]) else . end) | $RULES" "$1"
 }
 
 cmd_apply() {
@@ -274,6 +295,63 @@ prune_backups() {
   done
 }
 
+# The active profile's name, or nothing when none is set.
+active_name() {
+  local name=""
+  if [[ -f $ACTIVE ]]; then IFS= read -r name <"$ACTIVE" || true; fi
+  printf '%s' "$name"
+}
+
+# Atomic write of one file in the config tree from stdin.
+store_file() {
+  local dest=$1 tmp
+  mkdir -p "$(dirname "$dest")"
+  tmp=$(mktemp "$(dirname "$dest")/.tmp.XXXXXX")
+  TMP_FILE=$tmp
+  cat >"$tmp"
+  chmod 644 "$tmp"
+  mv -f "$tmp" "$dest"
+  TMP_FILE=
+}
+
+check_name() {
+  [[ $1 =~ $NAME_RE ]] || reject "invalid profile name '$1': 1 to 40 characters of [A-Za-z0-9 _-], starting with a letter or digit, not ending in a space"
+}
+
+# "<mtime>\t<name>" per stored profile, newest first, ties by name.
+profiles_by_recency() {
+  local f n
+  for f in "$PROFILES"/*.json; do
+    [[ -f $f ]] || continue
+    n=$(basename "$f" .json)
+    [[ $n =~ $NAME_RE ]] || continue
+    printf '%s\t%s\n' "$(stat -c %Y "$f")" "$n"
+  done | sort -t$'\t' -k1,1nr -k2,2
+}
+
+stored_profile() { # name -> path, exit 3 unless it exists
+  check_name "$1"
+  [[ -f $PROFILES/$1.json ]] || reject "no such profile: $1"
+  printf '%s' "$PROFILES/$1.json"
+}
+
+# Rules for every identity that a stored profile has and the chosen profile
+# lacks, so an unplugged monitor keeps its rule. The most recently modified
+# profile holding an identity supplies it.
+fallback_lines() { # chosen-file chosen-name
+  local seen mtime from id f
+  seen=$(jq -c '[.monitors[].identity]' "$1")
+  while IFS=$'\t' read -r mtime from; do
+    f=$PROFILES/$from.json
+    if [[ -n $(profile_problems "$f" 2>/dev/null || echo bad) ]]; then continue; fi
+    while IFS= read -r id; do
+      printf -- '-- from profile %s: monitor not in %s\n' "$from" "$2"
+      rules_of "$f" "$id"
+      seen=$(jq -c --arg id "$id" '. + [$id]' <<<"$seen")
+    done < <(jq -r --argjson seen "$seen" '[.monitors[].identity | select(. as $i | $seen | index($i) | not)] | unique[]' "$f")
+  done < <(profiles_by_recency)
+}
+
 cmd_persist() {
   local file="" empty=0
   while (($#)); do
@@ -288,22 +366,28 @@ cmd_persist() {
     esac
   done
 
-  local name="(none)" rules=()
+  local name="(none)" rules=() active
   if ((empty)); then
     [[ -z $file ]] || reject "--empty takes no profile file"
   else
-    [[ -n $file ]] || file=$LAST_APPLIED
-    [[ -f $file ]] || reject "no profile to persist: pass a file or apply one first"
+    if [[ -z $file ]]; then
+      active=$(active_name)
+      if [[ -f $LAST_APPLIED ]]; then
+        file=$LAST_APPLIED
+      elif [[ $active =~ $NAME_RE && -f $PROFILES/$active.json ]]; then
+        file=$PROFILES/$active.json
+      fi
+    fi
+    [[ -f $file ]] || reject "no profile to persist: pass a file, apply one, or activate a saved profile"
     validate_profile "$file"
     name=$(jq -r .name "$file")
-    mapfile -t rules < <(rules_of "$file")
+    mapfile -t rules < <(rules_of "$file"; fallback_lines "$file" "$name")
   fi
 
   local dest="$HYPR_DIR/displays.lua" tmp
   mkdir -p "$HYPR_DIR"
   tmp=$(mktemp "$dest.tmp.XXXXXX")
-  PERSIST_TMP=$tmp
-  trap '[[ -z $PERSIST_TMP ]] || rm -f "$PERSIST_TMP"' EXIT
+  TMP_FILE=$tmp
   {
     printf '%s\n' "-- Generated by omarchy-displays $VERSION. Do not edit: the next persist overwrites it." \
       "-- Profile: $name" \
@@ -318,7 +402,7 @@ cmd_persist() {
     cp -p "$dest" "$dest.bak.$(next_backup_ts)"
   fi
   mv -f "$tmp" "$dest"
-  PERSIST_TMP=
+  TMP_FILE=
   prune_backups
 
   if ! hyprctl reload >/dev/null; then
@@ -326,6 +410,93 @@ cmd_persist() {
     exit 1
   fi
   echo "persisted $name to $dest"
+}
+
+cmd_profile_list() {
+  local active f n
+  active=$(active_name)
+  for f in "$PROFILES"/*.json; do
+    [[ -f $f ]] || continue
+    n=$(basename "$f" .json)
+    [[ $n =~ $NAME_RE ]] || continue
+    jq -c --arg n "$n" --arg a "$active" --argjson m "$(stat -c %Y "$f")" \
+      '{name: $n, active: ($n == $a), identities: [.monitors[]?.identity], modified: $m}' "$f" 2>/dev/null || true
+  done | jq -s 'sort_by(.name)'
+}
+
+cmd_profile_save() {
+  local file="" name="" activate=0
+  while (($#)); do
+    case $1 in
+      --name)
+        [[ -n ${2:-} ]] || reject "--name needs a value"
+        name=$2
+        shift 2
+        ;;
+      --activate) activate=1; shift ;;
+      -*) reject "unknown option $1" ;;
+      *)
+        [[ -z $file ]] || reject "profile save takes one profile file"
+        file=$1
+        shift
+        ;;
+    esac
+  done
+  [[ -n $file ]] || reject "profile save needs a profile file"
+  validate_profile "$file"
+  [[ -n $name ]] || name=$(jq -r .name "$file")
+  check_name "$name"
+  jq --arg n "$name" '.name = $n' "$file" | store_file "$PROFILES/$name.json"
+  if ((activate)); then set_active "$name"; fi
+  echo "saved $name"
+}
+
+cmd_profile_delete() {
+  local path
+  path=$(stored_profile "${1:-}")
+  rm -f "$path"
+  if [[ $(active_name) == "$1" ]]; then rm -f "$ACTIVE"; fi
+}
+
+# Activating also drops last-applied.json, or a bare persist would still write
+# the profile apply saw last instead of the one just activated.
+set_active() {
+  printf '%s\n' "$1" | store_file "$ACTIVE"
+  rm -f "$LAST_APPLIED"
+}
+
+cmd_profile_activate() {
+  stored_profile "${1:-}" >/dev/null
+  set_active "$1"
+}
+
+# The stored profile whose identity set equals the connected monitors', the
+# active one first when several do.
+cmd_profile_match() {
+  local present active mtime n hit=""
+  present=$(cmd_state | jq -c '[.[].identity] | unique')
+  active=$(active_name)
+  while IFS=$'\t' read -r mtime n; do
+    jq -e --argjson p "$present" '([.monitors[]?.identity] | unique) == $p' "$PROFILES/$n.json" >/dev/null 2>&1 || continue
+    if [[ $n == "$active" ]]; then hit=$n; break; fi
+    [[ -n $hit ]] || hit=$n
+  done < <(profiles_by_recency)
+  [[ -n $hit ]] || exit 1
+  echo "$hit"
+}
+
+cmd_profile() {
+  local sub=${1:-} path
+  shift || true
+  case $sub in
+    list) cmd_profile_list ;;
+    show) path=$(stored_profile "${1:-}") && jq . "$path" ;;
+    save) cmd_profile_save "$@" ;;
+    delete) cmd_profile_delete "$@" ;;
+    activate) cmd_profile_activate "$@" ;;
+    match) cmd_profile_match ;;
+    *) reject "profile needs list, show, save, delete, activate or match" ;;
+  esac
 }
 
 cmd_doctor() {
@@ -358,6 +529,7 @@ case "${1:-}" in
   revert) cmd_revert ;;
   status) cmd_status ;;
   persist) shift; cmd_persist "$@" ;;
+  profile) shift; cmd_profile "$@" ;;
   doctor) cmd_doctor ;;
   loader-line) echo "$LOADER_LINE" ;;
   version) echo "$VERSION" ;;
