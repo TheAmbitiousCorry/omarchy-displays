@@ -1,0 +1,200 @@
+[
+  {
+    "id": 1,
+    "name": "DP-2",
+    "description": "Dell Inc. DELL SE2726H HG5QZB4",
+    "make": "Dell Inc.",
+    "model": "DELL SE2726H",
+    "serial": "HG5QZB4",
+    "width": 1920,
+    "height": 1080,
+    "physicalWidth": 600,
+    "physicalHeight": 340,
+    "refreshRate": 143.98599,
+    "x": 1920,
+    "y": 0,
+    "activeWorkspace": {
+      "id": 6,
+      "name": "6"
+    },
+    "specialWorkspace": {
+      "id": 0,
+      "name": ""
+    },
+    "reserved": [
+      0,
+      26,
+      0,
+      0
+    ],
+    "scale": 1,
+    "transform": 0,
+    "focused": false,
+    "dpmsStatus": true,
+    "vrr": false,
+    "solitary": "0",
+    "solitaryBlockedBy": [
+      "WINDOWED",
+      "CANDIDATE"
+    ],
+    "activelyTearing": false,
+    "tearingBlockedBy": [
+      "NOT_TORN",
+      "USER",
+      "CANDIDATE"
+    ],
+    "directScanoutTo": "0",
+    "directScanoutBlockedBy": [
+      "USER",
+      "CANDIDATE"
+    ],
+    "disabled": false,
+    "currentFormat": "XRGB8888",
+    "mirrorOf": "none",
+    "availableModes": [
+      "1920x1080@60.00Hz",
+      "1920x1080@143.99Hz",
+      "1920x1080@120.00Hz",
+      "1920x1080@119.88Hz",
+      "1920x1080@120.07Hz"
+    ],
+    "colorManagementPreset": "srgb",
+    "sdrBrightness": 1,
+    "sdrSaturation": 1,
+    "sdrMinLuminance": 0.2,
+    "sdrMaxLuminance": 80,
+    "hardwareCursorsInUse": true
+  },
+  {
+    "id": 2,
+    "name": "HDMI-A-1",
+    "description": "ASUSTek COMPUTER INC ASUS VG27V 0x00023706",
+    "make": "ASUSTek COMPUTER INC",
+    "model": "ASUS VG27V",
+    "serial": "0x00023706",
+    "width": 1920,
+    "height": 1080,
+    "physicalWidth": 600,
+    "physicalHeight": 340,
+    "refreshRate": 164.99001,
+    "x": 1920,
+    "y": 1080,
+    "activeWorkspace": {
+      "id": 1,
+      "name": "1"
+    },
+    "specialWorkspace": {
+      "id": 0,
+      "name": ""
+    },
+    "reserved": [
+      0,
+      26,
+      0,
+      0
+    ],
+    "scale": 1,
+    "transform": 0,
+    "focused": true,
+    "dpmsStatus": true,
+    "vrr": false,
+    "solitary": "0",
+    "solitaryBlockedBy": [
+      "WINDOWED",
+      "CANDIDATE"
+    ],
+    "activelyTearing": false,
+    "tearingBlockedBy": [
+      "NOT_TORN",
+      "USER",
+      "CANDIDATE"
+    ],
+    "directScanoutTo": "0",
+    "directScanoutBlockedBy": [
+      "USER",
+      "CANDIDATE"
+    ],
+    "disabled": false,
+    "currentFormat": "XRGB8888",
+    "mirrorOf": "none",
+    "availableModes": [
+      "1920x1080@164.99Hz",
+      "1920x1080@144.00Hz",
+      "1920x1080@120.00Hz",
+      "1920x1080@120.00Hz",
+      "1920x1080@119.88Hz"
+    ],
+    "colorManagementPreset": "srgb",
+    "sdrBrightness": 1,
+    "sdrSaturation": 1,
+    "sdrMinLuminance": 0.2,
+    "sdrMaxLuminance": 80,
+    "hardwareCursorsInUse": true
+  },
+  {
+    "id": 0,
+    "name": "DP-1",
+    "description": "Samsung Electric Company S27C31x H9DWB00491",
+    "make": "Samsung Electric Company",
+    "model": "S27C31x",
+    "serial": "H9DWB00491",
+    "width": 1920,
+    "height": 1080,
+    "physicalWidth": 600,
+    "physicalHeight": 330,
+    "refreshRate": 74.97300,
+    "x": 0,
+    "y": 1080,
+    "activeWorkspace": {
+      "id": 11,
+      "name": "11"
+    },
+    "specialWorkspace": {
+      "id": 0,
+      "name": ""
+    },
+    "reserved": [
+      0,
+      26,
+      0,
+      0
+    ],
+    "scale": 1,
+    "transform": 0,
+    "focused": false,
+    "dpmsStatus": true,
+    "vrr": false,
+    "solitary": "0",
+    "solitaryBlockedBy": [
+      "WINDOWED",
+      "CANDIDATE"
+    ],
+    "activelyTearing": false,
+    "tearingBlockedBy": [
+      "NOT_TORN",
+      "USER",
+      "CANDIDATE"
+    ],
+    "directScanoutTo": "0",
+    "directScanoutBlockedBy": [
+      "USER",
+      "CANDIDATE"
+    ],
+    "disabled": false,
+    "currentFormat": "XRGB8888",
+    "mirrorOf": "none",
+    "availableModes": [
+      "1920x1080@60.00Hz",
+      "1920x1080@74.97Hz",
+      "1920x1080@60.00Hz",
+      "1920x1080@59.94Hz",
+      "1920x1080@50.00Hz"
+    ],
+    "colorManagementPreset": "srgb",
+    "sdrBrightness": 1,
+    "sdrSaturation": 1,
+    "sdrMinLuminance": 0.2,
+    "sdrMaxLuminance": 80,
+    "hardwareCursorsInUse": true
+  }
+]

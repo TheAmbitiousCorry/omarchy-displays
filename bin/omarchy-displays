@@ -1,0 +1,222 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# omarchy:summary=Show, apply, confirm, and revert Hyprland monitor layouts
+# omarchy:args=state | apply PROFILE.json [--timeout N] | confirm | revert | help
+# omarchy:examples=omarchy displays state | omarchy displays apply desk.json | omarchy displays apply desk.json --timeout 30 | omarchy displays confirm | omarchy displays revert
+
+SELF=$(readlink -f "${BASH_SOURCE[0]}")
+LOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/omarchy-displays/countdown"
+DEFAULT_TIMEOUT=15
+
+# EDID strings are attacker-controlled and end up inside a Lua string handed to
+# eval, so only these characters may pass. jq's `$` also matches before a
+# trailing newline, hence the explicit newline test in the validator.
+STRING_RE='^[A-Za-z0-9 ._:@/+-]+$'
+NUMBER_RE='^-?[0-9]+(\.[0-9]+)?$'
+
+usage() {
+  cat <<'EOF'
+Usage: omarchy-displays <command>
+  state                           connected monitors as JSON, each with a derived identity
+  apply PROFILE.json [--timeout N]  apply live, then revert after N seconds (default 15) unless confirmed
+  confirm                         keep the applied layout
+  revert                          reload the Hyprland config, undoing any unconfirmed change
+  help                            this text
+EOF
+}
+
+reject() {
+  echo "omarchy-displays: $*" >&2
+  exit 3
+}
+
+# Prints the countdown's pid and succeeds only while that process is alive, so
+# a lock left behind by a crash or reboot counts as no countdown.
+live_countdown_pid() {
+  local pid
+  [[ -f $LOCK/pid ]] || return 1
+  pid=$(<"$LOCK/pid") || return 1
+  [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null || return 1
+  printf '%s\n' "$pid"
+}
+
+cmd_state() {
+  local monitors
+  monitors=$(hyprctl -j monitors all)
+  jq '
+    (map("\(.make) \(.model)") | group_by(.) | map({key: .[0], value: length}) | from_entries) as $count
+    | map(
+        if (.serial // "") != "" then . + {identity: "desc:\(.description)"}
+        elif $count["\(.make) \(.model)"] == 1 then . + {identity: "desc:\(.make) \(.model)"}
+        else . + {identity: .name,
+                  identityWarning: "duplicate make and model without serial; matched by connector"}
+        end)
+  ' <<<"$monitors"
+}
+
+# Prints one problem per line; no output means the profile is safe to write
+# into Lua. Every string and number that reaches Lua is checked here.
+VALIDATE='
+  def str_ok: type == "string" and test($str_re) and (contains("\n") | not);
+  def num_ok: type == "number" and (tojson | test($num_re));
+  if type != "object" then "profile must be a JSON object"
+  else
+    (if .schemaVersion == 1 then empty else "schemaVersion must be 1" end),
+    (if (.name | type) == "string" then empty else "name must be a string" end),
+    (if (.monitors | type) == "array" and (.monitors | length) > 0
+     then empty else "monitors must be a non-empty array" end),
+    (.monitors | if type == "array" then to_entries[] else empty end
+     | .key as $i | .value as $m
+     | if ($m | type) != "object" then "monitors[\($i)] must be an object"
+       else
+         (["identity", "mode", "position"][] as $k
+          | if ($m | has($k)) and ($m[$k] | str_ok) then empty
+            else "monitors[\($i)].\($k) must be a string of [A-Za-z0-9 ._:@/+-]" end),
+         (if ($m.enabled | type) == "boolean" then empty
+          else "monitors[\($i)].enabled must be true or false" end),
+         (if ($m | has("scale")) and ($m.scale | num_ok) then empty
+          else "monitors[\($i)].scale must be a plain number" end),
+         (["mirror", "cm"][] as $k
+          | if $m[$k] != null and (($m[$k] | str_ok) | not)
+            then "monitors[\($i)].\($k) must be null or a string of [A-Za-z0-9 ._:@/+-]" else empty end),
+         (["transform", "vrr", "bitdepth", "sdrbrightness", "sdrsaturation"][] as $k
+          | if $m[$k] != null and (($m[$k] | num_ok) | not)
+            then "monitors[\($i)].\($k) must be null or a plain number" else empty end)
+       end)
+  end
+'
+
+# One hl.monitor call per monitor. A disabled monitor carries only output and
+# disabled: a mode on a disabled output would re-enable it.
+RULES='
+  def q: "\"" + . + "\"";
+  .monitors[] as $m
+  | (["output = \($m.identity | q)"]
+     + (if $m.enabled then
+          ["mode = \($m.mode | q)", "position = \($m.position | q)", "scale = \($m.scale | tojson)"]
+          + [["transform", "mirror", "vrr", "bitdepth", "cm", "sdrbrightness", "sdrsaturation"][] as $k
+             | select($m[$k] != null)
+             | $m[$k] | if type == "string" then "\($k) = \(q)" else "\($k) = \(tojson)" end]
+        else ["disabled = true"] end))
+  | "hl.monitor({ " + join(", ") + " })"
+'
+
+cmd_apply() {
+  local file="" timeout=$DEFAULT_TIMEOUT
+  while (($#)); do
+    case $1 in
+      --timeout)
+        [[ ${2:-} =~ ^[0-9]+$ ]] && ((10#$2 >= 1)) || reject "--timeout needs a positive integer"
+        timeout=$((10#$2))
+        shift 2
+        ;;
+      -*) reject "unknown option $1" ;;
+      *)
+        [[ -z $file ]] || reject "apply takes one profile file"
+        file=$1
+        shift
+        ;;
+    esac
+  done
+  [[ -n $file ]] || reject "apply needs a profile file"
+  [[ -f $file ]] || reject "no such file: $file"
+  jq empty "$file" 2>/dev/null || reject "$file is not valid JSON"
+
+  local problems
+  problems=$(jq -r --arg str_re "$STRING_RE" --arg num_re "$NUMBER_RE" "$VALIDATE" "$file")
+  if [[ -n $problems ]]; then
+    echo "omarchy-displays: refusing $file:" >&2
+    sed 's/^/  /' <<<"$problems" >&2
+    exit 3
+  fi
+
+  local rules
+  mapfile -t rules < <(jq -r "$RULES" "$file")
+
+  # mkdir is the only arbiter: a liveness check before it would let two
+  # concurrent applies both clear a stale lock and both win.
+  local pid
+  mkdir -p "$(dirname "$LOCK")"
+  if ! mkdir "$LOCK" 2>/dev/null; then
+    if pid=$(live_countdown_pid); then
+      echo "a countdown is already running (pid $pid); confirm or revert first"
+      exit 2
+    fi
+    rm -rf "$LOCK"
+    if ! mkdir "$LOCK" 2>/dev/null; then
+      echo "a countdown is already running; confirm or revert first"
+      exit 2
+    fi
+  fi
+  # Our own pid holds the lock until the countdown exists, so a concurrent
+  # apply never sees a lock without a live owner.
+  echo $$ >"$LOCK/pid"
+
+  local rule reply
+  for rule in "${rules[@]}"; do
+    # `hyprctl keyword monitor` is rejected under the Lua config; eval is the
+    # only live path.
+    if ! reply=$(hyprctl eval "$rule") || [[ $reply != ok ]]; then
+      hyprctl reload >/dev/null || true
+      rm -rf "$LOCK"
+      echo "omarchy-displays: hyprctl eval failed (${reply:-no reply}); config reloaded" >&2
+      exit 1
+    fi
+  done
+
+  # setsid gives the countdown its own session, so it outlives whatever
+  # launched apply (a shell panel, a terminal) and still reverts on time.
+  setsid bash "$SELF" _countdown "$LOCK" "$timeout" </dev/null >/dev/null 2>&1 &
+  echo $! >"$LOCK/pid"
+  echo "applied ${#rules[@]} monitors; countdown ${timeout}s (pid $!)"
+}
+
+cmd_countdown() {
+  local lock=$1 timeout=$2 i
+  for ((i = 0; i < timeout * 5; i++)); do
+    [[ -e $lock/confirmed ]] && break
+    sleep 0.2
+  done
+  [[ -e $lock/confirmed ]] || hyprctl reload >/dev/null || true
+  rm -rf "$lock"
+}
+
+cmd_confirm() {
+  if ! live_countdown_pid >/dev/null; then
+    echo "nothing to confirm"
+    exit 1
+  fi
+  touch "$LOCK/confirmed" 2>/dev/null || true
+  local i
+  for ((i = 0; i < 20; i++)); do
+    [[ -d $LOCK ]] || break
+    sleep 0.1
+  done
+}
+
+cmd_revert() {
+  local pid
+  if pid=$(live_countdown_pid); then
+    kill "$pid" 2>/dev/null || true
+  fi
+  if ! hyprctl reload >/dev/null; then
+    rm -rf "$LOCK"
+    echo "omarchy-displays: hyprctl reload failed" >&2
+    exit 1
+  fi
+  rm -rf "$LOCK"
+}
+
+case "${1:-}" in
+  state) cmd_state ;;
+  apply) shift; cmd_apply "$@" ;;
+  confirm) cmd_confirm ;;
+  revert) cmd_revert ;;
+  _countdown) shift; cmd_countdown "$@" ;;
+  help | -h | --help | "") usage ;;
+  *)
+    usage >&2
+    exit 3
+    ;;
+esac
