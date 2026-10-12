@@ -1,0 +1,7 @@
+[
+  { "id": 1, "name": "1", "monitor": "HDMI-A-1", "monitorID": 2 },
+  { "id": 6, "name": "6", "monitor": "DP-2", "monitorID": 1 },
+  { "id": 11, "name": "11", "monitor": "DP-1", "monitorID": 0 },
+  { "id": 12, "name": "12", "monitor": "DP-1", "monitorID": 0 },
+  { "id": 9, "name": "9", "monitor": "DP-2", "monitorID": 1 }
+]

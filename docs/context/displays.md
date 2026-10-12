@@ -7,7 +7,7 @@ last-verified: 2026-10-12
 
 `bin/omarchy-displays` reads Hyprland's monitor state, applies a profile live, and reverts it unless the change is confirmed in time. It needs only bash, coreutils, `jq` and `hyprctl`, and works from a TTY.
 
-Commands: `state`, `apply <profile.json> [--timeout N]`, `confirm`, `revert`, `status`, `persist [profile.json]`, `profile list|show|save|delete|activate|match`, `doctor`, `loader-line`, `version`, `help`. `version` prints `0.1.0`. The hidden `_countdown` command is the detached countdown process and is not for direct use.
+Commands: `state`, `workspaces`, `apply <profile.json> [--timeout N]`, `confirm`, `revert`, `status`, `persist [profile.json]`, `profile list|show|save|delete|activate|match`, `doctor`, `loader-line`, `version`, `help`. `version` prints `0.1.0`. The hidden `_countdown` command is the detached countdown process and is not for direct use.
 
 ## Profile schema
 
@@ -18,7 +18,7 @@ A profile is a JSON object, schema version 1.
 | `schemaVersion` | number | Must be `1`. |
 | `name` | string | Profile name. Required; must pass the string whitelist because `persist` writes it into a Lua comment. |
 | `monitors` | array | Non-empty. One object per monitor. |
-| `workspaces` | array | Reserved. Accepted and ignored. |
+| `workspaces` | array | Optional. Workspace-to-monitor assignments, see [Workspaces](#workspaces). Absent or `null` means none. |
 
 Each monitor object:
 
@@ -38,6 +38,15 @@ Each monitor object:
 | `sdrbrightness` | number | no | SDR brightness multiplier. |
 | `sdrsaturation` | number | no | SDR saturation multiplier. |
 
+Each `workspaces` entry:
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `workspace` | string | yes | Workspace name, matching `^[A-Za-z0-9:_-]+$` (so `6`, `special:scratch`). |
+| `monitor` | string | yes | Identity string, or connector name, passing the string whitelist. |
+| `default` | boolean | no | Whether the monitor is the workspace's default. Absent means `false`. |
+| `persistent` | boolean | no | Keep the workspace alive while empty. Absent means `false`. |
+
 An optional field that is absent or `null` is omitted from the generated rule. `mode`, `position` and `scale` may be absent on a disabled monitor; when present they are still validated.
 
 ## Identity rules
@@ -56,7 +65,7 @@ Every other field in `state` output is Hyprland's own, passed through unchanged;
 
 `apply` validates the whole profile first (see [Exit codes](#exit-codes) and the `lua-whitelist` entry in [conventions](./core/conventions.md)); `persist` runs the same validator. It then checks the lock, takes it, and runs one `hyprctl eval` of an `hl.monitor({...})` rule per monitor, in file order. Eval is the live path because `hyprctl keyword monitor` is rejected under the Lua config. If any eval does not answer `ok`, `apply` runs `hyprctl reload`, releases the lock and exits 1.
 
-After the evals, `apply` copies the validated profile to `$XDG_RUNTIME_DIR/omarchy-displays/last-applied.json`, outside the lock directory so it survives `confirm`. It then writes the lock's `deadline` file and starts the countdown with `setsid`, stdin, stdout and stderr on `/dev/null`, so it survives its caller. It prints `applied N monitors; countdown Ns (pid P)` and exits 0 at once. The countdown polls every 0.2 seconds for the `confirmed` file for `--timeout` seconds (positive integer, default 15). On confirmation it removes the lock. On timeout it runs `hyprctl reload`, which discards every eval'd change and restores the file state, then removes the lock. Both end with exit 0.
+After the evals, `apply` copies the validated profile to `$XDG_RUNTIME_DIR/omarchy-displays/last-applied.json`, outside the lock directory so it survives `confirm`. It then writes the lock's `deadline` file and starts the countdown with `setsid`, stdin, stdout and stderr on `/dev/null`, so it survives its caller. It prints `applied N monitors; countdown Ns (pid P)` and exits 0 at once. The countdown polls every 0.2 seconds for the `confirmed` file for `--timeout` seconds (positive integer, default 15). On confirmation it removes the lock. On timeout it runs `hyprctl reload`, which discards every eval'd change and restores the file state, then removes the lock. Both end with exit 0. Before any eval, `apply` writes `workspaces-before.json` in the lock: `{workspace name: connector}` from `hyprctl -j workspaces`. After the monitor and workspace-rule evals it moves existing workspaces to match the profile (see [Workspaces](#workspaces)). When the countdown lapses, and on `revert`, the reload is followed by moving every snapshot workspace that still exists back to its recorded connector (by connector name, validated as `[A-Za-z0-9-]+`). `confirm` leaves the workspaces where `apply` put them.
 
 `confirm` touches `confirmed`, waits up to 2 seconds for the lock to disappear, and exits 0. With no live countdown it prints `nothing to confirm` and exits 1.
 
@@ -83,7 +92,7 @@ Validation problems are written to stderr, one per line.
 
 ## Generated Lua rule shape
 
-One call per monitor:
+One call per monitor, then one per workspace entry (see [Workspaces](#workspaces)):
 
 ```lua
 hl.monitor({ output = "desc:Samsung Electric Company S27C31x H9DWB00491", mode = "1920x1080@60", position = "0x1080", scale = 1, transform = 0, vrr = 0, bitdepth = 8, cm = "srgb", sdrbrightness = 1, sdrsaturation = 1 })
@@ -106,7 +115,7 @@ hl.monitor({ ... })
 hl.monitor({ ... })
 ```
 
-After the chosen profile's rules come the fallback rules: for every identity that any stored profile has and the chosen profile lacks, one rule under the comment `-- from profile <donor>: monitor not in <chosen>`. This is how an unplugged monitor keeps its rule. The donor is the most recently modified stored profile that holds the identity (ties by name), and each identity is written once. The stored profile of the chosen name counts as a donor too, so a profile carrying monitors that are not connected keeps them when it is persisted from an applied copy. A stored profile that fails validation is skipped, so nothing unvalidated reaches Lua.
+The chosen profile's workspace rules follow its monitor rules. After them come the fallback rules: for every identity that any stored profile has and the chosen profile lacks, one rule under the comment `-- from profile <donor>: monitor not in <chosen>`. This is how an unplugged monitor keeps its rule. The donor is the most recently modified stored profile that holds the identity (ties by name), and each identity is written once. A fallback block holds monitor rules only: a donor's workspace rules are never copied. The stored profile of the chosen name counts as a donor too, so a profile carrying monitors that are not connected keeps them when it is persisted from an applied copy. A stored profile that fails validation is skipped, so nothing unvalidated reaches Lua.
 
 One writer: `apply` (through `hyprctl eval`) and `persist` (into the file, fallback rules included) take their rule lines from the same jq program, so the eval lines and the file lines are byte-identical for a profile.
 
@@ -120,6 +129,29 @@ Facts about Hyprland 0.56.2, checked on this machine:
 - `hyprctl eval` prints only `ok`, or `error: ...` with exit status 7. It never prints a return value, so a check is an `assert`.
 - A rule in `displays.lua` wins over an earlier rule for the same monitor in `monitors.lua`: with `monitors.lua` saying 75 Hz, a persisted 60 Hz profile held 60 Hz across `hyprctl reload`.
 - A syntax error in `displays.lua` makes `hyprctl configerrors` name only that file; the `pcall` keeps the rest of the config, and the binds, loading.
+
+## Workspaces
+
+`workspaces` prints a JSON array of `{workspace, monitor, default, persistent}`, one per rule in `hyprctl -j workspacerules` that names a monitor (`workspace` is Hyprland's `workspaceString`; `monitor` is the string as Hyprland reports it, so a `desc:` rule keeps its prefix and carries no serial). It then appends every workspace in `hyprctl -j workspaces` that no rule covers, as `{workspace, monitor, default: false, persistent: false, unruled: true}` where `monitor` is the `state` identity of the monitor the workspace is on. A rule with no monitor field is dropped.
+
+A profile's `workspaces` entry becomes one line after the monitor rules, in file order:
+
+```lua
+hl.workspace_rule({ workspace = "6", monitor = "desc:Samsung Electric Company S27C31x H9DWB00491", default = true })
+hl.workspace_rule({ workspace = "special:scratch", monitor = "desc:Dell Inc. DELL SE2726H HG5QZB4", default = false, persistent = true })
+```
+
+Fields appear as `workspace`, `monitor`, `default`, `persistent`; `default` is always written and `persistent` only when `true`. `apply` evals these lines after the monitor rules and `persist` writes them, from the same jq program, so the two stay byte-identical. `apply` still reports the monitor count only.
+
+A rule does not move a workspace that already exists, so `apply` and `persist` also move one. After its evals (or its reload), for each `workspaces` entry whose workspace exists in `hyprctl -j workspaces` on a connector other than the one `state` maps the entry's identity to (a prefix of the full identity counts), it dispatches `hl.dsp.workspace.move({ workspace = "6", monitor = "<identity>" })`. A workspace that does not exist is left to the rule. Success prints nothing; a dispatch that does not answer `ok` prints one line on stderr and the rest continue.
+
+Precedence: `displays.lua` loads after `workspaces.lua`, so a persisted rule overrides the user's rule for the same workspace. The user's keybinds are never read or changed; a bind that dispatches by workspace number (Super+1..5 focusing a workspace on each of two monitors) keeps working, and follows the new assignment. Removing an entry from the profile and persisting leaves `workspaces.lua` in charge of that workspace again.
+
+Checked live on Hyprland 0.56.2:
+
+- Evaluating a rule identical to an existing one leaves `hyprctl -j workspacerules` unchanged.
+- Evaluating a rule changes `hyprctl -j workspacerules` at once, and `hyprctl reload` restores the file's rule.
+- A rule moves where a workspace is created, not a workspace that already exists. With workspace 6 live on the Dell and an eval'd rule putting it on the Samsung, `hyprctl dispatch 'hl.dsp.focus({ workspace = "6" })'` left it on the Dell. A workspace with no windows that did not exist (8) was created on the Samsung after the same kind of eval. An existing workspace moves with `hl.dsp.workspace.move`, which accepts a `desc:` identity as `monitor`; `apply` and `persist` issue it.
 
 ## Doctor
 
@@ -169,7 +201,7 @@ Choosing a profile loads it into the canvas without applying it (`Model.mergePro
 
 When `state` reports an `identityWarning` on any monitor, the panel's top-right line shows it in the urgent colour. It does not block anything.
 
-It shows the connected monitors from `state` as one rectangle each, to scale. A single scale factor, computed in `plugin/Model.js`, fits the bounding box of all monitors into the canvas, and never enlarges past 1:1. Each rectangle has the logical size (pixels divided by scale, width and height swapped for transforms 1, 3, 5 and 7), a number, the model name and the connector. Pressing a rectangle selects it; dragging it moves it (cursor: open hand on hover, closed hand while dragging, accent border). The pointer delta is divided by the zoom factor, so positions are in layout pixels, and each move rewrites `monitors` once through `Model.applyDrag`: the rectangle snaps, is pushed out of any overlap, and is rounded to integers (never negative). Snapping aligns an edge to an edge of another rectangle (left or right to left or right, top or bottom to top or bottom) or a corner to a corner when both axes are within the threshold; a corner match wins over single-axis matches. The threshold is `round(16 / fit)` layout pixels, 16 canvas pixels at any zoom. Edge contact is allowed; real overlap is pushed out along the axis of least penetration, up to 8 passes. Zoom-to-fit stays automatic.
+It shows the connected monitors from `state` as one rectangle each, to scale. Along the bottom edge of each rectangle sit small dimmed chips, one per workspace assigned to that monitor (`Model.workspaceChips`): the rules from `workspaces` merged with the canvas profile's `workspaces`, the profile winning for a workspace both name, numbers first in numeric order, then names. A rule matches a monitor by the `desc:` prefix rule Hyprland uses, or by connector. Chips are hidden on a rectangle under 64 px tall. A single scale factor, computed in `plugin/Model.js`, fits the bounding box of all monitors into the canvas, and never enlarges past 1:1. Each rectangle has the logical size (pixels divided by scale, width and height swapped for transforms 1, 3, 5 and 7), a number, the model name and the connector. Pressing a rectangle selects it; dragging it moves it (cursor: open hand on hover, closed hand while dragging, accent border). The pointer delta is divided by the zoom factor, so positions are in layout pixels, and each move rewrites `monitors` once through `Model.applyDrag`: the rectangle snaps, is pushed out of any overlap, and is rounded to integers (never negative). Snapping aligns an edge to an edge of another rectangle (left or right to left or right, top or bottom to top or bottom) or a corner to a corner when both axes are within the threshold; a corner match wins over single-axis matches. The threshold is `round(16 / fit)` layout pixels, 16 canvas pixels at any zoom. Edge contact is allowed; real overlap is pushed out along the axis of least penetration, up to 8 passes. Zoom-to-fit stays automatic.
 
 With a monitor selected the arrow keys nudge it 10 layout pixels, Shift+arrow 1, through the same path. A nudge snaps only within 4 pixels (none for Shift), because a snap radius at or above the step would pull every nudge back to the edge it left. Escape still closes the panel.
 
@@ -189,6 +221,8 @@ The **Advanced** section is two rows, enabled only for an enabled monitor:
 - **Bit depth** is `8 bit` or `10 bit`. Choosing 10 bit shows "10 bit: some apps cannot screen-capture, and border colours stay 8 bit", from the Hyprland wiki's warning.
 - **Colour** is the `cm` presets: `auto`, `srgb`, `dcip3`, `dp3`, `adobe`, `wide`, `edid`, `hdr` and `hdredid`, the last two labelled "(experimental)" as the wiki does.
 - **SDR brightness** (1 to 2) and **SDR saturation** (0 to 2) are text fields that commit on Enter or when they lose focus. A value outside its range or not a number is dropped and the field shows the stored value again. The wiki names 1.0 to 2.0 as the typical brightness range and gives no range for saturation; both ranges here are this panel's choice.
+
+A **Workspaces** button next to Advanced opens one row, closing Advanced (and the reverse), so the card keeps its size: a dropdown of workspace names (from `workspaces` merged with the profile), a dropdown of monitors as `Model (connector)`, `Default` and `Persistent` toggles, and the buttons Assign and Unassign. Choosing a workspace fills the row from its rule or profile entry. Assign writes the row into the canvas's `workspaces` list, replacing an entry with the same workspace name (`Model.upsertWorkspace`). Unassign removes that entry (`Model.removeWorkspace`), leaving the workspace to `workspaces.lua` and Hyprland; it is enabled only while the profile has an entry. Nothing reaches Hyprland before Apply, and a change to the list makes the canvas differ from the saved profile (`Model.isDirty` with the canvas list). Apply, Keep and Save send the list in the profile (`Model.toProfile` passes it through); Keep persists it.
 
 ### Monitor fields
 

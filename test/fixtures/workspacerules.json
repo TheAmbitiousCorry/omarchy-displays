@@ -1,0 +1,6 @@
+[
+  { "workspaceString": "1", "enabled": true, "monitor": "desc:ASUSTek COMPUTER INC ASUS VG27V", "default": true },
+  { "workspaceString": "6", "enabled": true, "monitor": "desc:Dell Inc. DELL SE2726H", "default": true },
+  { "workspaceString": "11", "enabled": true, "monitor": "desc:Samsung Electric Company S27C31x", "default": true, "persistent": true },
+  { "workspaceString": "9", "enabled": true, "gapsIn": [5, 5, 5, 5] }
+]

@@ -24,6 +24,14 @@ if [[ $* == "-j monitors all" ]]; then
   cat "$FAKE_FIXTURE"
   exit 0
 fi
+if [[ $* == "-j workspacerules" ]]; then
+  cat "$FAKE_RULES"
+  exit 0
+fi
+if [[ $* == "-j workspaces" ]]; then
+  cat "$FAKE_WORKSPACES"
+  exit 0
+fi
 printf '%s\n' "$*" >> "$FAKE_LOG"
 # Real eval answers only "ok", or "error: ..." with exit 7; doctor relies on that.
 if [[ $1 == eval && $2 == 'assert(OMARCHY_DISPLAYS_LOADED ~= nil)' && -z ${FAKE_LOADED:-} ]]; then
@@ -94,6 +102,14 @@ eq "state: identity is the description" \
   "$(jq -r '.[] | select(.name == "DP-1") | .identity' <<<"$out")" \
   "desc:Samsung Electric Company S27C31x H9DWB00491"
 eq "state: no warning when serials exist" "$(jq '[.[] | has("identityWarning")] | any' <<<"$out")" false
+
+export FAKE_RULES="$here/fixtures/workspacerules.json"
+export FAKE_WORKSPACES="$here/fixtures/workspaces.json"
+run workspaces
+eq "workspaces: exit 0" "$rc" 0
+eq "workspaces: ruled entries are normalised, a rule without a monitor is dropped, unruled workspaces follow" \
+  "$(jq -c . <<<"$out")" \
+  '[{"workspace":"1","monitor":"desc:ASUSTek COMPUTER INC ASUS VG27V","default":true,"persistent":false},{"workspace":"6","monitor":"desc:Dell Inc. DELL SE2726H","default":true,"persistent":false},{"workspace":"11","monitor":"desc:Samsung Electric Company S27C31x","default":true,"persistent":true},{"workspace":"12","monitor":"desc:Samsung Electric Company S27C31x H9DWB00491","default":false,"persistent":false,"unruled":true},{"workspace":"9","monitor":"desc:Dell Inc. DELL SE2726H HG5QZB4","default":false,"persistent":false,"unruled":true}]'
 
 export FAKE_FIXTURE="$here/fixtures/monitors-twins.json"
 run state
@@ -199,6 +215,16 @@ run revert
 refuse "disabled monitor with a bad mode" "$(profile offbad "$(jq '.monitors[1].enabled = false | .monitors[1].mode = "x;y"' <<<"$desk")")"
 refuse "enabled monitor missing scale" "$(profile noscale "$(jq 'del(.monitors[0].scale)' <<<"$desk")")"
 refuse "enabled monitor missing mode" "$(profile nomode "$(jq 'del(.monitors[0].mode)' <<<"$desk")")"
+ws_ok='{"workspace":"6","monitor":"desc:Samsung Electric Company S27C31x H9DWB00491","default":true,"persistent":false}'
+refuse "workspace name with a quote" "$(profile wsquote "$(jq --argjson w "$ws_ok" '.workspaces = [$w | .workspace = "6\" })"]' <<<"$desk")")"
+refuse "workspace name with a space" "$(profile wsspace "$(jq --argjson w "$ws_ok" '.workspaces = [$w | .workspace = "my ws"]' <<<"$desk")")"
+refuse "workspace name with a trailing newline" "$(profile wsnl "$(jq --argjson w "$ws_ok" '.workspaces = [$w | .workspace = "6\n"]' <<<"$desk")")"
+refuse "empty workspace name" "$(profile wsempty "$(jq --argjson w "$ws_ok" '.workspaces = [$w | .workspace = ""]' <<<"$desk")")"
+refuse "workspace number instead of a string" "$(profile wsnum "$(jq --argjson w "$ws_ok" '.workspaces = [$w | .workspace = 6]' <<<"$desk")")"
+refuse "workspace monitor with a quote" "$(profile wsmon "$(jq --argjson w "$ws_ok" '.workspaces = [$w | .monitor = "desc:X\" })"]' <<<"$desk")")"
+refuse "workspace default as a string" "$(profile wsdef "$(jq --argjson w "$ws_ok" '.workspaces = [$w | .default = "true"]' <<<"$desk")")"
+refuse "workspace persistent as a number" "$(profile wspers "$(jq --argjson w "$ws_ok" '.workspaces = [$w | .persistent = 1]' <<<"$desk")")"
+refuse "workspaces as an object" "$(profile wsobj "$(jq '.workspaces = {}' <<<"$desk")")"
 
 reset
 run status
@@ -489,6 +515,100 @@ run profile activate other
 eq "profile activate: drops last-applied" "$([[ -e $XDG_RUNTIME_DIR/omarchy-displays/last-applied.json ]] && echo yes || echo no)" no
 run persist
 eq "persist after activate: writes the activated profile" "$(sed -n 2p "$hypr/displays.lua")" '-- Profile: other'
+
+# workspace rules: monitor rules first, none in the fallback block
+wsdesk=$(jq '.workspaces = [
+  {workspace: "6", monitor: "desc:Samsung Electric Company S27C31x H9DWB00491", default: true, persistent: false},
+  {workspace: "special:scratch", monitor: "desc:Dell Inc. DELL SE2726H HG5QZB4", default: false, persistent: true}]' <<<"$desk")
+ws_rule6='hl.workspace_rule({ workspace = "6", monitor = "desc:Samsung Electric Company S27C31x H9DWB00491", default = true })'
+ws_rule_s='hl.workspace_rule({ workspace = "special:scratch", monitor = "desc:Dell Inc. DELL SE2726H HG5QZB4", default = false, persistent = true })'
+reset
+run apply "$(profile wsdesk "$wsdesk")"
+eq "workspaces apply: exit 0" "$rc" 0
+eq "workspaces apply: still counts monitors" "${out%% (pid*}" "applied 3 monitors; countdown 15s"
+eq "workspaces apply: workspace rules are eval'd after the three monitor rules, persistent only when true" \
+  "$(log | sed -n '4,$p' | grep '^eval')" "eval $ws_rule6
+eval $ws_rule_s"
+eq "workspaces apply: monitor rules come first" "$(log | sed -n '1,3p' | grep -c 'eval hl.monitor')" 3
+run revert
+
+rm -rf "$hypr" "$last" "$cfg/profiles" "$cfg/active"
+run profile save "$root/wsdesk.json" --name wsdesk
+run profile save "$(profile solo '{"schemaVersion":1,"name":"solo","monitors":[{"identity":"desc:ASUSTek COMPUTER INC ASUS VG27V 0x00023706","enabled":true,"mode":"preferred","position":"0x0","scale":1}],"workspaces":[{"workspace":"3","monitor":"desc:ASUSTek COMPUTER INC ASUS VG27V 0x00023706","default":true,"persistent":false}]}')"
+run persist "$cfg/profiles/wsdesk.json"
+eq "workspaces persist: workspace lines follow the monitor lines" \
+  "$(sed -n '4,$p' "$hypr/displays.lua" | grep -v '^--' | sed 's/^\(hl\.[a-z_]*\).*/\1/' | tr '\n' ' ')" \
+  "hl.monitor hl.monitor hl.monitor hl.workspace_rule hl.workspace_rule "
+eq "workspaces persist: file lines equal the eval lines" \
+  "$(grep '^hl.workspace_rule' "$hypr/displays.lua")" "$ws_rule6
+$ws_rule_s"
+run persist "$cfg/profiles/solo.json"
+eq "workspaces persist: a donor's monitors become fallback rules" "$(grep -c 'from profile wsdesk' "$hypr/displays.lua")" 2
+eq "workspaces persist: only the chosen profile's workspace rule is written" \
+  "$(grep '^hl.workspace_rule' "$hypr/displays.lua")" \
+  'hl.workspace_rule({ workspace = "3", monitor = "desc:ASUSTek COMPUTER INC ASUS VG27V 0x00023706", default = true })'
+eq "workspaces persist: nothing follows the fallback comment but a monitor rule" \
+  "$(grep -A1 'from profile' "$hypr/displays.lua" | grep -vc '^--')" 2
+
+# existing workspaces follow the profile: apply and persist move them, lapse and revert move them back
+cp "$here/fixtures/workspaces.json" "$root/ws.json"
+export FAKE_WORKSPACES="$root/ws.json"
+sam="desc:Samsung Electric Company S27C31x H9DWB00491"
+ws6=$(jq --arg m "$sam" '.workspaces = [{workspace: "6", monitor: $m, default: true, persistent: false}]' <<<"$desk")
+move6="dispatch hl.dsp.workspace.move({ workspace = \"6\", monitor = \"$sam\" })"
+back6='dispatch hl.dsp.workspace.move({ workspace = "6", monitor = "DP-2" })'
+moved_fixture() { jq '(.[] | select(.name == "6") | .monitor) = "DP-1"' "$here/fixtures/workspaces.json" > "$root/ws.json"; }
+
+reset
+run apply "$(profile ws6 "$ws6")"
+eq "settle: a workspace on the wrong monitor gets exactly one move" "$(log | grep -c 'workspace.move')" 1
+eq "settle: the move names the workspace and the identity" "$(log | grep workspace.move)" "$move6"
+eq "settle: apply prints nothing about the move" "${out%% (pid*}" "applied 3 monitors; countdown 15s"
+eq "snapshot: maps every workspace name to its connector" "$(jq -cS . "$lock/workspaces-before.json")" \
+  '{"1":"HDMI-A-1","11":"DP-1","12":"DP-1","6":"DP-2","9":"DP-2"}'
+run revert
+
+reset
+jq '(.[] | select(.name == "6") | .monitor) = "DP-1"' "$here/fixtures/workspaces.json" > "$root/ws.json"
+run apply "$root/ws6.json"
+eq "settle: a workspace already on the right monitor gets no dispatch" "$(log | grep -c '^dispatch' || true)" 0
+run revert
+cp "$here/fixtures/workspaces.json" "$root/ws.json"
+
+reset
+run apply "$root/ws6.json" --timeout 1
+moved_fixture
+sleep 2
+eq "lapse: reload, then the workspace goes back to its snapshot connector" "$(log | sed -n '/^reload$/,$p')" "reload
+$back6"
+cp "$here/fixtures/workspaces.json" "$root/ws.json"
+
+reset
+run apply "$root/ws6.json" --timeout 5
+moved_fixture
+: > "$FAKE_LOG"
+run revert
+eq "revert: reload, then the workspace goes back" "$(log)" "reload
+$back6"
+cp "$here/fixtures/workspaces.json" "$root/ws.json"
+
+reset
+run apply "$root/ws6.json" --timeout 5
+moved_fixture
+: > "$FAKE_LOG"
+run confirm
+eq "confirm: workspaces stay where apply put them" "$(log | grep -c 'dispatch' || true)" 0
+cp "$here/fixtures/workspaces.json" "$root/ws.json"
+
+reset
+rm -rf "$hypr"
+run persist "$root/ws6.json"
+eq "persist: reload, then the move" "$(log)" "reload
+$move6"
+
+reset
+run apply "$(profile wsq "$(jq '.workspaces = [{workspace: "6\" })", monitor: "desc:X", default: true, persistent: false}]' <<<"$desk")")"
+eq "settle: a quoted workspace name is refused before any hyprctl call" "$rc:$(log | wc -c)" "3:0"
 
 printf '\n%d passed, %d failed\n' "$passes" "$fails"
 exit $((fails > 0))

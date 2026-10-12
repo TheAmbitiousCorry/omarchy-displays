@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # omarchy:summary=Show, apply, confirm, revert, and persist Hyprland monitor layouts
-# omarchy:args=state | apply PROFILE.json [--timeout N] | confirm | revert | status | persist [PROFILE.json] | profile list|show|save|delete|activate|match | doctor | version | help
-# omarchy:examples=omarchy displays state | omarchy displays apply desk.json | omarchy displays apply desk.json --timeout 30 | omarchy displays confirm | omarchy displays revert | omarchy displays status | omarchy displays persist | omarchy displays persist desk.json | omarchy displays profile list | omarchy displays profile save desk.json --activate | omarchy displays profile match | omarchy displays doctor
+# omarchy:args=state | workspaces | apply PROFILE.json [--timeout N] | confirm | revert | status | persist [PROFILE.json] | profile list|show|save|delete|activate|match | doctor | version | help
+# omarchy:examples=omarchy displays state | omarchy displays workspaces | omarchy displays apply desk.json | omarchy displays apply desk.json --timeout 30 | omarchy displays confirm | omarchy displays revert | omarchy displays status | omarchy displays persist | omarchy displays persist desk.json | omarchy displays profile list | omarchy displays profile save desk.json --activate | omarchy displays profile match | omarchy displays doctor
 
 VERSION=0.1.0
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
@@ -25,6 +25,8 @@ trap '[[ -z $TMP_FILE ]] || rm -f "$TMP_FILE"' EXIT
 # trailing newline, hence the explicit newline test in the validator.
 STRING_RE='^[A-Za-z0-9 ._:@/+-]+$'
 NUMBER_RE='^-?[0-9]+(\.[0-9]+)?$'
+# Workspace names include special:x and named workspaces, so the colon stays.
+WORKSPACE_RE='^[A-Za-z0-9:_-]+$'
 # A profile name becomes a filename: no leading dot, slash or space, and no
 # trailing space.
 NAME_RE='^[A-Za-z0-9]([A-Za-z0-9 _-]{0,38}[A-Za-z0-9_-])?$'
@@ -33,6 +35,7 @@ usage() {
   cat <<'EOF'
 Usage: omarchy-displays <command>
   state                           connected monitors as JSON, each with a derived identity
+  workspaces                      workspace-to-monitor rules as JSON, plus existing workspaces that have no rule
   apply PROFILE.json [--timeout N]  apply live, then revert after N seconds (default 15) unless confirmed
   confirm                         keep the applied layout
   revert                          reload the Hyprland config, undoing any unconfirmed change
@@ -80,12 +83,29 @@ cmd_state() {
   ' <<<"$monitors"
 }
 
+# Workspace rules that name a monitor, then the live workspaces no rule covers.
+# hyprctl reports a workspace's monitor by connector, so those map to identities.
+cmd_workspaces() {
+  local monitors rules spaces
+  monitors=$(cmd_state)
+  rules=$(hyprctl -j workspacerules)
+  spaces=$(hyprctl -j workspaces)
+  jq -n --argjson monitors "$monitors" --argjson rules "$rules" --argjson spaces "$spaces" '
+    [$rules[] | select((.monitor // "") != "")
+     | {workspace: .workspaceString, monitor, default: (.default // false), persistent: (.persistent // false)}] as $ruled
+    | ($ruled | map(.workspace)) as $names
+    | $ruled + [$spaces[] | select(.name as $n | $names | index($n) | not)
+       | .monitor as $c | ($monitors[] | select(.name == $c)) as $m
+       | {workspace: .name, monitor: $m.identity, default: false, persistent: false, unruled: true}]'
+}
+
 # Prints one problem per line; no output means the profile is safe to write
 # into Lua. Every string and number that reaches Lua is checked here. mode,
 # position and scale are required only on an enabled monitor.
 VALIDATE='
   def str_ok: type == "string" and test($str_re) and (contains("\n") | not);
   def num_ok: type == "number" and (tojson | test($num_re));
+  def ws_ok: type == "string" and test($ws_re) and (contains("\n") | not);
   if type != "object" then "profile must be a JSON object"
   else
     (if .schemaVersion == 1 then empty else "schemaVersion must be 1" end),
@@ -113,15 +133,29 @@ VALIDATE='
          (["transform", "vrr", "bitdepth", "sdrbrightness", "sdrsaturation"][] as $k
           | if $m[$k] != null and (($m[$k] | num_ok) | not)
             then "monitors[\($i)].\($k) must be null or a plain number" else empty end)
+       end),
+    (if has("workspaces") and .workspaces != null and (.workspaces | type) != "array"
+     then "workspaces must be an array" else empty end),
+    ((.workspaces // []) | if type == "array" then to_entries[] else empty end
+     | .key as $i | .value as $w
+     | if ($w | type) != "object" then "workspaces[\($i)] must be an object"
+       else
+         (if ($w.workspace | ws_ok) then empty
+          else "workspaces[\($i)].workspace must be a string of [A-Za-z0-9:_-]" end),
+         (if ($w | has("monitor")) and ($w.monitor | str_ok) then empty
+          else "workspaces[\($i)].monitor must be a string of [A-Za-z0-9 ._:@/+-]" end),
+         (["default", "persistent"][] as $k
+          | if $w[$k] != null and ($w[$k] | type) != "boolean"
+            then "workspaces[\($i)].\($k) must be true or false" else empty end)
        end)
   end
 '
 
 # One hl.monitor call per monitor. A disabled monitor carries only output and
 # disabled: a mode on a disabled output would re-enable it.
-RULES='
-  def q: "\"" + . + "\"";
-  .monitors[] as $m
+QDEF='def q: "\"" + . + "\"";'
+RULES="$QDEF"'
+  (.monitors[] as $m
   | (["output = \($m.identity | q)"]
      + (if $m.enabled then
           ["mode = \($m.mode | q)", "position = \($m.position | q)", "scale = \($m.scale | tojson)"]
@@ -129,13 +163,17 @@ RULES='
              | select($m[$k] != null)
              | $m[$k] | if type == "string" then "\($k) = \(q)" else "\($k) = \(tojson)" end]
         else ["disabled = true"] end))
-  | "hl.monitor({ " + join(", ") + " })"
+  | "hl.monitor({ " + join(", ") + " })"),
+  (if $only != "" then empty else (.workspaces // [])[]
+   | (["workspace = \(.workspace | q)", "monitor = \(.monitor | q)", "default = \(.default // false | tojson)"]
+      + (if .persistent == true then ["persistent = true"] else [] end))
+   | "hl.workspace_rule({ " + join(", ") + " })" end)
 '
 
 # Prints one problem per line for a readable profile file; no output means
 # every string and number in it is safe to write into Lua.
 profile_problems() {
-  jq -r --arg str_re "$STRING_RE" --arg num_re "$NUMBER_RE" "$VALIDATE" "$1"
+  jq -r --arg str_re "$STRING_RE" --arg num_re "$NUMBER_RE" --arg ws_re "$WORKSPACE_RE" "$VALIDATE" "$1"
 }
 
 # Exits 3 with the problems on stderr unless the file is a profile whose every
@@ -153,14 +191,57 @@ validate_profile() {
 }
 
 # The only producer of rule lines: apply evals them and persist writes them.
-# With an identity, only that monitor's rule.
+# Monitor rules come first, then workspace rules. With an identity, only that
+# monitor's rule and no workspace rules, which is what the fallback block needs.
 rules_of() {
   jq -r --arg only "${2:-}" \
     "(if \$only != \"\" then .monitors |= ([.[] | select(.identity == \$only)] | .[:1]) else . end) | $RULES" "$1"
 }
 
+# A workspace rule only places workspaces that do not exist yet, so existing
+# ones are moved by hand. Both movers print nothing on success and report a
+# refused dispatch on stderr without stopping.
+move_workspace() { # lua-move-call
+  local reply
+  reply=$(hyprctl dispatch "$1" 2>&1) || true
+  [[ $reply == ok ]] || echo "omarchy-displays: workspace move failed (${reply:-no reply}): $1" >&2
+}
+
+# Moves each existing workspace named in the profile onto the connector its
+# monitor identity resolves to. An identity may be a prefix of a monitor's
+# full one, as in a rule; one that matches no monitor is left to the rule.
+settle_workspaces() { # profile.json
+  local monitors spaces line
+  monitors=$(cmd_state) || return 0
+  spaces=$(hyprctl -j workspaces) || return 0
+  while IFS= read -r line; do
+    [[ -n $line ]] && move_workspace "$line"
+  done < <(jq -r --argjson monitors "$monitors" --argjson spaces "$spaces" "$QDEF"'
+    .workspaces // [] | .[] as $w
+    | ([$monitors[] | select(.identity == $w.monitor or (.identity | startswith($w.monitor)))][0].name) as $want
+    | select($want != null)
+    | select([$spaces[] | select(.name == $w.workspace and .monitor != $want)] | length > 0)
+    | "hl.dsp.workspace.move({ workspace = \($w.workspace | q), monitor = \($w.monitor | q) })"' "$1")
+}
+
+# Sends workspaces that still exist back to the connector a snapshot
+# ({name: connector}) recorded, skipping any name or connector that is not
+# plain, since both end up inside a Lua string.
+restore_workspaces() { # snapshot.json
+  local spaces name connector
+  [[ -f $1 ]] || return 0
+  spaces=$(hyprctl -j workspaces) || return 0
+  while IFS=$'\t' read -r name connector; do
+    [[ $name =~ $WORKSPACE_RE && $connector =~ ^[A-Za-z0-9-]+$ ]] || continue
+    move_workspace "hl.dsp.workspace.move({ workspace = \"$name\", monitor = \"$connector\" })"
+  done < <(jq -r --argjson spaces "$spaces" '
+    to_entries[] | .key as $n | .value as $c
+    | select([$spaces[] | select(.name == $n and .monitor != $c)] | length > 0)
+    | [$n, $c] | @tsv' "$1" 2>/dev/null)
+}
+
 cmd_apply() {
-  local file="" timeout=$DEFAULT_TIMEOUT
+  local file="" timeout=$DEFAULT_TIMEOUT monitor_count
   while (($#)); do
     case $1 in
       --timeout)
@@ -181,6 +262,7 @@ cmd_apply() {
 
   local rules
   mapfile -t rules < <(rules_of "$file")
+  monitor_count=$(jq '.monitors | length' "$file")
 
   # mkdir is the only arbiter: a liveness check before it would let two
   # concurrent applies both clear a stale lock and both win.
@@ -200,6 +282,8 @@ cmd_apply() {
   # Our own pid holds the lock until the countdown exists, so a concurrent
   # apply never sees a lock without a live owner.
   echo $$ >"$LOCK/pid"
+  hyprctl -j workspaces | jq 'map({key: .name, value: .monitor}) | from_entries' \
+    >"$LOCK/workspaces-before.json" || echo '{}' >"$LOCK/workspaces-before.json"
 
   local rule reply
   for rule in "${rules[@]}"; do
@@ -213,6 +297,8 @@ cmd_apply() {
     fi
   done
 
+  settle_workspaces "$file"
+
   # Kept outside the lock so it survives confirm, which is when persist reads it.
   [[ $file -ef $LAST_APPLIED ]] || cp -f "$file" "$LAST_APPLIED"
 
@@ -221,7 +307,7 @@ cmd_apply() {
   echo $(($(date +%s) + timeout)) >"$LOCK/deadline"
   setsid bash "$SELF" _countdown "$LOCK" "$timeout" </dev/null >/dev/null 2>&1 &
   echo $! >"$LOCK/pid"
-  echo "applied ${#rules[@]} monitors; countdown ${timeout}s (pid $!)"
+  echo "applied $monitor_count monitors; countdown ${timeout}s (pid $!)"
 }
 
 cmd_status() {
@@ -242,7 +328,10 @@ cmd_countdown() {
     [[ -e $lock/confirmed ]] && break
     sleep 0.2
   done
-  [[ -e $lock/confirmed ]] || hyprctl reload >/dev/null || true
+  if [[ ! -e $lock/confirmed ]]; then
+    hyprctl reload >/dev/null || true
+    restore_workspaces "$lock/workspaces-before.json"
+  fi
   rm -rf "$lock"
 }
 
@@ -269,6 +358,7 @@ cmd_revert() {
     echo "omarchy-displays: hyprctl reload failed" >&2
     exit 1
   fi
+  restore_workspaces "$LOCK/workspaces-before.json"
   rm -rf "$LOCK"
 }
 
@@ -409,6 +499,7 @@ cmd_persist() {
     echo "omarchy-displays: wrote $dest but hyprctl reload failed" >&2
     exit 1
   fi
+  ((empty)) || settle_workspaces "$file"
   echo "persisted $name to $dest"
 }
 
@@ -524,6 +615,7 @@ cmd_doctor() {
 
 case "${1:-}" in
   state) cmd_state ;;
+  workspaces) cmd_workspaces ;;
   apply) shift; cmd_apply "$@" ;;
   confirm) cmd_confirm ;;
   revert) cmd_revert ;;

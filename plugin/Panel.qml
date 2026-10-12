@@ -30,6 +30,7 @@ Item {
   property string lastAction: ""
   property int dragIndex: -1
   property bool advancedOpen: false
+  property bool workspacesOpen: false
 
   property var liveMonitors: []
   property bool stateLoading: false
@@ -48,6 +49,13 @@ Item {
   property string keepName: ""
   property var keepSnapshot: null
   property bool deleteAsking: false
+
+  property var workspaceRules: []
+  property var canvasWorkspaces: []
+  property string wsPick: ""
+  property string wsMonitor: ""
+  property bool wsDefault: true
+  property bool wsPersistent: false
 
   readonly property int snapPixels: 16
   readonly property int nudgeStep: 10
@@ -81,7 +89,7 @@ Item {
     return s + " does not divide " + m.width + "x" + m.height + " cleanly (Hyprland would warn)"
   }
   readonly property var profileNames: profiles.map(function(p) { return p.name })
-  readonly property bool dirty: profileData === null || Model.isDirty(monitors, profileData)
+  readonly property bool dirty: profileData === null || Model.isDirty(monitors, profileData, canvasWorkspaces)
   readonly property string profileName: selectedProfile !== "" ? selectedProfile : "default"
   readonly property bool profileBusy: profileRunner.running
   readonly property string identityWarning: {
@@ -95,6 +103,7 @@ Item {
     selectedProfile = ""
     profileData = null
     profileExtra = []
+    canvasWorkspaces = []
     mergeOnState = false
     nameMode = ""
     deleteAsking = false
@@ -116,7 +125,14 @@ Item {
     else close()
   }
 
+  function refreshWorkspaces() {
+    if (workspacesProc.running) return
+    workspacesProc.command = [cliPath, "workspaces"]
+    workspacesProc.running = true
+  }
+
   function refreshState() {
+    refreshWorkspaces()
     if (stateProc.running) return
     stateLoading = true
     stateProc.command = [cliPath, "state"]
@@ -147,6 +163,7 @@ Item {
   function showProfile(name, data) {
     selectedProfile = name
     profileData = data
+    canvasWorkspaces = data.workspaces || []
     if (stateLoading || liveMonitors.length === 0) {
       mergeOnState = true
       return
@@ -186,7 +203,7 @@ Item {
 
   // The monitor list, extras included, goes to the CLI as a file: no profile string is parsed by the shell.
   function saveProfile(name) {
-    var profile = Model.toProfile(monitors, name, profileExtra)
+    var profile = Model.toProfile(monitors, name, profileExtra, canvasWorkspaces)
     runProfile("save", name, ["bash", "-c",
       'f=$(mktemp --suffix=.json); printf "%s" "$1" > "$f"; "$2" profile save "$f" --name "$3" --activate; rc=$?; rm -f "$f"; exit $rc',
       "displays-save", JSON.stringify(profile), cliPath, name], profile)
@@ -227,6 +244,28 @@ Item {
     cancelName()
     if (mode === "rename") renameProfile(text)
     else saveProfile(text)
+  }
+
+  // Points the assignment row at a workspace and fills it from the rule or profile entry that names it.
+  function pickWorkspace(name) {
+    wsPick = name
+    var entry = Model.mergeWorkspaces(workspaceRules, canvasWorkspaces).filter(function(w) { return w.workspace === name })[0]
+    if (!entry) return
+    var owner = monitors.filter(function(m) { return Model.monitorMatches(entry.monitor, m.identity, m.name) })[0]
+    if (owner) wsMonitor = owner.identity
+    wsDefault = !!entry.default
+    wsPersistent = !!entry.persistent
+  }
+
+  function assignWorkspace() {
+    var identity = wsMonitor !== "" ? wsMonitor : (monitors.length > 0 ? monitors[0].identity : "")
+    if (wsPick === "" || identity === "") return
+    canvasWorkspaces = Model.upsertWorkspace(canvasWorkspaces, {
+      workspace: wsPick, monitor: identity, default: wsDefault, persistent: wsPersistent })
+  }
+
+  function unassignWorkspace() {
+    canvasWorkspaces = Model.removeWorkspace(canvasWorkspaces, wsPick)
   }
 
   function updateMonitor(index, patch) {
@@ -279,7 +318,7 @@ Item {
   }
 
   function apply() {
-    var profile = JSON.stringify(Model.toProfile(monitors, profileName))
+    var profile = JSON.stringify(Model.toProfile(monitors, profileName, [], canvasWorkspaces))
     // The profile is passed as $1 so no monitor string is ever parsed by the shell.
     run("apply", ["bash", "-c",
       'f=$(mktemp --suffix=.json); printf "%s" "$1" > "$f"; "$2" apply "$f" --timeout "$3"; rc=$?; rm -f "$f"; exit $rc',
@@ -289,7 +328,7 @@ Item {
   function keep() {
     counting = false
     keepName = profileName
-    keepSnapshot = Model.toProfile(monitors, keepName, profileExtra)
+    keepSnapshot = Model.toProfile(monitors, keepName, profileExtra, canvasWorkspaces)
     // Exit 100 means confirm failed and 101 the profile save; any other non-zero is persist's.
     run("keep", ["bash", "-c",
       '"$1" confirm || exit 100; f=$(mktemp --suffix=.json); printf "%s" "$2" > "$f"; ' +
@@ -322,6 +361,7 @@ Item {
           root.monitors = root.mergeOnState && merged !== null ? merged.monitors : live
           root.mergeOnState = false
           root.selectedIndex = Math.min(root.selectedIndex, Math.max(0, root.monitors.length - 1))
+          if (root.wsMonitor === "" && root.wsPick !== "") root.pickWorkspace(root.wsPick)
         } catch (e) {
           root.error = "Could not read monitor state"
         }
@@ -329,6 +369,22 @@ Item {
     }
     onExited: function(code) {
       if (code !== 0) root.error = "omarchy-displays state failed (exit " + code + ")"
+    }
+  }
+
+  Process {
+    id: workspacesProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          root.workspaceRules = JSON.parse(text)
+        } catch (e) {
+          return
+        }
+        var known = Model.workspaceOptions(root.workspaceRules, root.canvasWorkspaces).map(function(o) { return o.value })
+        if (root.wsPick === "" || known.indexOf(root.wsPick) < 0) root.pickWorkspace(known[0] || "")
+      }
     }
   }
 
@@ -653,8 +709,45 @@ Item {
                 radius: Style.cornerRadius
                 opacity: monitor.disabled ? 0.4 : 1
 
+                Flow {
+                  id: chips
+                  anchors.bottom: parent.bottom
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.margins: Style.space(6)
+                  spacing: Style.space(4)
+                  opacity: 0.6
+                  visible: parent.height >= Style.space(64) && chipRepeater.count > 0
+
+                  Repeater {
+                    id: chipRepeater
+                    model: Model.workspaceChips(root.workspaceRules, root.canvasWorkspaces, monitor.identity, monitor.name)
+
+                    Rectangle {
+                      required property var modelData
+                      width: Math.max(height, chipText.implicitWidth + Style.space(8))
+                      height: chipText.implicitHeight + Style.space(4)
+                      radius: Style.cornerRadius
+                      color: "transparent"
+                      border.width: 1
+                      border.color: Style.normalBorderColor
+
+                      Text {
+                        id: chipText
+                        anchors.centerIn: parent
+                        textFormat: Text.PlainText
+                        text: parent.modelData.workspace
+                        color: Color.popups.text
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.caption
+                      }
+                    }
+                  }
+                }
+
                 Column {
                   anchors.centerIn: parent
+                  anchors.verticalCenterOffset: chips.visible ? -chips.height / 2 : 0
                   width: parent.width - Style.space(8)
                   spacing: Style.spacing.xxs
 
@@ -971,6 +1064,69 @@ Item {
           }
 
           RowLayout {
+            visible: root.workspacesOpen
+            Layout.fillWidth: true
+            spacing: Style.spacing.panelGap
+
+            Dropdown {
+              id: wsDropdown
+              label: "Workspace"
+              Layout.fillWidth: true
+              options: Model.workspaceOptions(root.workspaceRules, root.canvasWorkspaces)
+              Binding { target: wsDropdown; property: "value"; value: root.wsPick }
+              onChanged: function(v) { root.pickWorkspace(v) }
+            }
+            Dropdown {
+              id: wsMonitorDropdown
+              label: "Monitor"
+              Layout.fillWidth: true
+              options: root.monitors.map(function(m) { return { label: Model.shortName(m) + " (" + m.name + ")", value: m.identity } })
+              Binding {
+                target: wsMonitorDropdown
+                property: "value"
+                value: root.wsMonitor !== "" ? root.wsMonitor : (root.monitors.length > 0 ? root.monitors[0].identity : "")
+              }
+              onChanged: function(v) { root.wsMonitor = v }
+            }
+            Toggle {
+              label: "Default"
+              foreground: Color.popups.text
+              checked: root.wsDefault
+              Layout.preferredWidth: Style.space(140)
+              Layout.alignment: Qt.AlignBottom
+              onClicked: root.wsDefault = !root.wsDefault
+            }
+            Toggle {
+              label: "Persistent"
+              foreground: Color.popups.text
+              checked: root.wsPersistent
+              Layout.preferredWidth: Style.space(160)
+              Layout.alignment: Qt.AlignBottom
+              onClicked: root.wsPersistent = !root.wsPersistent
+            }
+            Button {
+              text: "Assign"
+              bordered: true
+              focusable: true
+              enabled: root.wsPick !== "" && root.monitors.length > 0
+              opacity: enabled ? 1 : 0.5
+              foreground: Color.popups.text
+              Layout.alignment: Qt.AlignBottom
+              onClicked: root.assignWorkspace()
+            }
+            Button {
+              text: "Unassign"
+              bordered: true
+              focusable: true
+              enabled: root.canvasWorkspaces.some(function(w) { return w.workspace === root.wsPick })
+              opacity: enabled ? 1 : 0.5
+              foreground: Color.popups.text
+              Layout.alignment: Qt.AlignBottom
+              onClicked: root.unassignWorkspace()
+            }
+          }
+
+          RowLayout {
             Layout.fillWidth: true
             spacing: Style.spacing.controlGap
 
@@ -980,7 +1136,21 @@ Item {
               focusable: true
               selected: root.advancedOpen
               foreground: Color.popups.text
-              onClicked: root.advancedOpen = !root.advancedOpen
+              onClicked: {
+                root.advancedOpen = !root.advancedOpen
+                if (root.advancedOpen) root.workspacesOpen = false
+              }
+            }
+            Button {
+              text: "Workspaces"
+              bordered: true
+              focusable: true
+              selected: root.workspacesOpen
+              foreground: Color.popups.text
+              onClicked: {
+                root.workspacesOpen = !root.workspacesOpen
+                if (root.workspacesOpen) root.advancedOpen = false
+              }
             }
             Item { Layout.fillWidth: true }
             Button {

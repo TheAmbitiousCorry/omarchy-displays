@@ -49,7 +49,8 @@ function advancedFields(m, enabledIdentities) {
 }
 
 // `extra` is carried verbatim: stored entries for monitors that are not connected.
-function toProfile(monitors, name, extra) {
+// `workspaces` is the canvas's workspace assignment list, passed through.
+function toProfile(monitors, name, extra, workspaces) {
   var enabledIdentities = monitors.filter(function (m) { return !m.disabled }).map(function (m) { return m.identity })
   return {
     schemaVersion: 1,
@@ -68,8 +69,70 @@ function toProfile(monitors, name, extra) {
       var extra = advancedFields(m, enabledIdentities)
       Object.keys(extra).forEach(function (k) { entry[k] = extra[k] })
       return entry
-    }).concat(extra || [])
+    }).concat(extra || []),
+    workspaces: (workspaces || []).map(workspaceEntry)
   }
+}
+
+var WORKSPACE_RE = /^[A-Za-z0-9:_-]+$/
+
+function workspaceEntry(e) {
+  return { workspace: e.workspace, monitor: e.monitor, default: !!e.default, persistent: !!e.persistent }
+}
+
+// Hyprland matches a desc: rule as a prefix of the monitor's description, and
+// a connector rule by name.
+function monitorMatches(ruleMonitor, identity, connector) {
+  if (typeof ruleMonitor !== "string" || ruleMonitor === "") return false
+  if (ruleMonitor === identity || ruleMonitor === connector) return true
+  return ruleMonitor.indexOf("desc:") === 0 && typeof identity === "string" && identity.indexOf(ruleMonitor) === 0
+}
+
+function compareWorkspaces(a, b) {
+  var an = /^\d+$/.test(a.workspace), bn = /^\d+$/.test(b.workspace)
+  if (an && bn) return Number(a.workspace) - Number(b.workspace)
+  if (an !== bn) return an ? -1 : 1
+  return a.workspace < b.workspace ? -1 : a.workspace > b.workspace ? 1 : 0
+}
+
+// What the system reports plus what the canvas profile assigns; the profile
+// wins where both name a workspace. Names the CLI would refuse are left out.
+function mergeWorkspaces(workspaces, profileWorkspaces) {
+  var byName = {}
+  ;(workspaces || []).forEach(function (w) { byName[w.workspace] = w })
+  ;(profileWorkspaces || []).forEach(function (w) { byName[w.workspace] = w })
+  return Object.keys(byName).map(function (k) { return byName[k] })
+    .filter(function (w) { return WORKSPACE_RE.test(w.workspace) })
+    .sort(compareWorkspaces)
+}
+
+// The workspaces that sit on one monitor, for the chips along its rectangle.
+function workspaceChips(workspaces, profileWorkspaces, identity, connector) {
+  return mergeWorkspaces(workspaces, profileWorkspaces).filter(function (w) {
+    return monitorMatches(w.monitor, identity, connector)
+  })
+}
+
+// Replaces the entry for the same workspace name, else appends.
+function upsertWorkspace(list, entry) {
+  var next = (list || []).filter(function (w) { return w.workspace !== entry.workspace })
+  next.push(workspaceEntry(entry))
+  return next
+}
+
+function removeWorkspace(list, name) {
+  return (list || []).filter(function (w) { return w.workspace !== name })
+}
+
+function workspaceOptions(workspaces, profileWorkspaces) {
+  return mergeWorkspaces(workspaces, profileWorkspaces).map(function (w) { return { label: w.workspace, value: w.workspace } })
+}
+
+function sameWorkspaces(a, b) {
+  function key(list) {
+    return JSON.stringify((list || []).map(workspaceEntry).sort(compareWorkspaces))
+  }
+  return key(a) === key(b)
 }
 
 var SPECIAL_MODES = [
@@ -347,9 +410,11 @@ var COMPARED_FIELDS = ["mode", "position", "scale", "vrr", "bitdepth", "cm", "sd
 var ROUNDED_FIELDS = ["scale", "sdrbrightness", "sdrsaturation"]
 
 // A field the profile does not carry is unspecified, not a difference, except
-// transform and mirror, whose absence means 0 and none. Profile monitors that
+// transform and mirror, whose absence means 0 and none. Workspaces are
+// compared only when the caller passes the canvas list. Profile monitors that
 // are not connected cannot differ; a connected monitor the profile lacks does.
-function isDirty(canvasMonitors, profile) {
+function isDirty(canvasMonitors, profile, canvasWorkspaces) {
+  if (canvasWorkspaces !== undefined && !sameWorkspaces(canvasWorkspaces, profile.workspaces)) return true
   var entries = {}
   ;(profile.monitors || []).forEach(function (e) { entries[e.identity] = e })
   return toProfile(canvasMonitors, profile.name).monitors.some(function (c) {

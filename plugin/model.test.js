@@ -514,3 +514,72 @@ test("profileOptions lists the names, with (unsaved) first only when asked", () 
   const o = Model.profileOptions(["a"], true)
   assert.deepStrictEqual([o[0].label, o[0].value, o[1].value], ["(unsaved)", Model.UNSAVED, "a"])
 })
+
+const SAM = "desc:Samsung Electric Company S27C31x H9DWB00491"
+const DELL = "desc:Dell Inc. DELL SE2726H HG5QZB4"
+const ASUS = "desc:ASUSTek COMPUTER INC ASUS VG27V 0x00023706"
+const ws = (workspace, monitor, over) => Object.assign({ workspace, monitor, default: true, persistent: false }, over)
+const names = (chips) => Array.from(chips, (c) => c.workspace)
+
+test("workspaceChips: a desc: rule without serial matches the monitor identity that extends it", () => {
+  const rules = [ws("1", "desc:ASUSTek COMPUTER INC ASUS VG27V"), ws("6", "desc:Dell Inc. DELL SE2726H")]
+  assert.deepStrictEqual(names(Model.workspaceChips(rules, [], ASUS)), ["1"])
+  assert.deepStrictEqual(names(Model.workspaceChips(rules, [], DELL)), ["6"])
+  assert.deepStrictEqual(names(Model.workspaceChips(rules, [], SAM)), [])
+})
+
+test("workspaceChips: a connector rule matches by connector, and a prefix of the wrong monitor does not match", () => {
+  assert.deepStrictEqual(names(Model.workspaceChips([ws("4", "DP-1")], [], SAM, "DP-1")), ["4"])
+  assert.deepStrictEqual(names(Model.workspaceChips([ws("4", "DP-1")], [], SAM, "DP-2")), [])
+  assert.deepStrictEqual(names(Model.workspaceChips([ws("4", "desc:Dell Inc.")], [], ASUS)), [])
+})
+
+test("workspaceChips: the profile entry wins over the system rule for the same workspace", () => {
+  const rules = [ws("6", DELL), ws("7", DELL)]
+  const profile = [ws("6", SAM)]
+  assert.deepStrictEqual(names(Model.workspaceChips(rules, profile, DELL)), ["7"])
+  assert.deepStrictEqual(names(Model.workspaceChips(rules, profile, SAM)), ["6"])
+})
+
+test("workspaceChips: numbers sort numerically before names, and an invalid name is left out", () => {
+  const rules = [ws("10", SAM), ws("2", SAM), ws("special:x", SAM), ws("9", SAM), ws("bad name", SAM)]
+  assert.deepStrictEqual(names(Model.workspaceChips(rules, [], SAM)), ["2", "9", "10", "special:x"])
+})
+
+test("workspaceChips: empty inputs give no chips", () => {
+  assert.strictEqual(Model.workspaceChips([], [], SAM).length, 0)
+  assert.strictEqual(Model.workspaceChips(undefined, undefined, SAM).length, 0)
+})
+
+test("upsertWorkspace replaces the entry with the same name and appends a new one", () => {
+  const list = [ws("6", DELL), ws("7", DELL)]
+  const replaced = Model.upsertWorkspace(list, ws("6", SAM, { default: false, persistent: true }))
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(replaced)), [ws("7", DELL), ws("6", SAM, { default: false, persistent: true })])
+  assert.strictEqual(list.length, 2)
+  assert.strictEqual(Model.upsertWorkspace(list, ws("8", DELL)).length, 3)
+  assert.strictEqual(Model.upsertWorkspace(undefined, ws("8", DELL)).length, 1)
+})
+
+test("removeWorkspace drops only the named entry and leaves the input alone", () => {
+  const list = [ws("6", DELL), ws("7", DELL)]
+  assert.deepStrictEqual(names(Model.removeWorkspace(list, "6")), ["7"])
+  assert.deepStrictEqual(names(Model.removeWorkspace(list, "99")), ["6", "7"])
+  assert.strictEqual(list.length, 2)
+})
+
+test("toProfile passes the canvas workspaces through, as booleans, and defaults to an empty list", () => {
+  const p = Model.toProfile([mon({})], "p", [], [{ workspace: "6", monitor: SAM, default: 1 }])
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(p.workspaces)), [ws("6", SAM, { persistent: false })])
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(Model.toProfile([mon({})], "p").workspaces)), [])
+})
+
+test("isDirty: workspaces differ only when the caller passes them and they differ in content", () => {
+  const p = Object.assign(prof(entry()), { workspaces: [ws("6", DELL), ws("7", DELL)] })
+  const base = Model.mergeProfile(p, [live()[0]]).monitors
+  assert.strictEqual(Model.isDirty(base, p), false)
+  assert.strictEqual(Model.isDirty(base, p, [ws("7", DELL), ws("6", DELL)]), false)
+  assert.strictEqual(Model.isDirty(base, p, [ws("6", DELL)]), true)
+  assert.strictEqual(Model.isDirty(base, p, [ws("6", SAM), ws("7", DELL)]), true)
+  assert.strictEqual(Model.isDirty(base, p, [ws("6", DELL), ws("7", DELL, { persistent: true })]), true)
+  assert.strictEqual(Model.isDirty(base, prof(entry()), []), false)
+})
